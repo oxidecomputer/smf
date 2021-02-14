@@ -1,3 +1,8 @@
 mod smf;
 
-pub use crate::smf::ServiceQuery;
+pub use crate::smf::{
+    SvcSelection,
+    SvcQuery,
+    SvcStatus,
+    SMFState,
+};

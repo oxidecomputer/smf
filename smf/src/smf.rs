@@ -1,10 +1,11 @@
 // Copyright 2021 Oxide Computer Company
 
 //! APIs for interacting with the Solaris service management facility.
-// TODO: Wrap svcs, get stat
-// TODO: DOCS ON EVERYTHING
-// TODO: Better error types (thiserror)
 
+// TODO-docs: DOCS ON EVERYTHING
+// TODO-err: Better error types (thiserror)
+
+use std::path::PathBuf;
 use std::str::FromStr;
 
 trait OutputExt {
@@ -28,8 +29,12 @@ impl OutputExt for std::process::Output {
     }
 }
 
+/// Describes the state of a service.
+///
+/// For more information, refer to the "States" section of the
+/// smf man page.
 #[derive(Debug, PartialEq)]
-enum SMFState {
+pub enum SMFState {
     Disabled,
     Degraded,
     Maintenance,
@@ -76,31 +81,33 @@ impl std::string::ToString for FMRI {
  *
  */
 
+/// Describes the status of an SMF service.
+///
+/// Refer to [SvcQuery] for information acquiring these structures.
 #[derive(Debug, PartialEq)]
 pub struct SvcStatus {
-    // The FMRI of a service (fault management resource identifier).
-    // Functionally acts as a service ID.
-    fmri: String,
-    // The primary contract ID for the service instance.
-    // Not all instances have primary contract IDs.
-    contract_id: Option<usize>,
-    // The instance name of the service instance.
-    instance_name: String,
-    // The abbreviated name of the next state (see "State").
-    // A hypen denotes that the instance is not transitioning.
-    next_state: Option<SMFState>,
-    // The scope name of the service instance.
-    scope_name: String,
-    // The service name of the service instance.
-    service_name: String,
-    // The service instance state.
-    state: SMFState,
-    // The time the service transitioned to the current state.
-    service_time: String,
-    // The zone in which the service exists.
-    zone: String,
-    // A brief service description. "-" denotes an empty value.
-    description: Option<String>,
+    /// The FMRI of a service (fault management resource identifier).
+    /// Functionally acts as a service ID.
+    pub fmri: String,
+    /// The primary contract ID for the service instance.
+    pub contract_id: Option<usize>,
+    /// The instance name of the service instance.
+    pub instance_name: String,
+    /// The abbreviated name of the next state.
+    /// If this field is `None`, the service is not changing states.
+    pub next_state: Option<SMFState>,
+    /// The scope name of the service instance.
+    pub scope_name: String,
+    /// The service name of the service instance.
+    pub service_name: String,
+    /// The service instance state.
+    pub state: SMFState,
+    /// The time the service transitioned to the current state.
+    pub service_time: String,
+    /// The zone in which the service exists.
+    pub zone: String,
+    /// A brief service description.
+    pub description: Option<String>,
 }
 
 impl FromStr for SvcStatus {
@@ -133,7 +140,7 @@ impl FromStr for SvcStatus {
             .collect::<Vec<String>>()
             .join(" ");
         let description = {
-            if description == "-" || description.is_empty()  {
+            if description == "-" || description.is_empty() {
                 None
             } else {
                 Some(description)
@@ -186,41 +193,44 @@ impl SvcColumn {
     }
 }
 
-pub enum ServiceSelection {
-    // All services instances.
+/// Determines which services are returned from [SvcQuery::get_status]
+pub enum SvcSelection {
+    /// All services instances.
     All,
-    // All service instances which have the provided service instance as their
-    // restarter.
+    /// All service instances which have the provided service instance as their
+    /// restarter.
     ByRestarter(String),
-    // All service instance which match the provided strings as either an FMRI
-    // or pattern (globs allowed) matching FMRIs.
+    /// All service instance which match the provided strings as either an FMRI
+    /// or pattern (globs allowed) matching FMRIs.
     ByPattern(Vec<String>),
 }
 
-pub struct ServiceQuery {
+/// Queries the underlying system to return [SvcStatus] structures.
+///
+/// Acts as a wrapper around the underlying 'svcs' command.
+pub struct SvcQuery {
     zone: Option<String>,
 }
 
-impl Default for ServiceQuery {
+impl Default for SvcQuery {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ServiceQuery {
-    pub fn new() -> ServiceQuery {
-        ServiceQuery {
-            zone: None,
-        }
+impl SvcQuery {
+    pub fn new() -> SvcQuery {
+        SvcQuery { zone: None }
     }
 
-    pub fn zone(&mut self, zone: String) -> &mut ServiceQuery {
+    /// Request a query be issued within a specific zone.
+    pub fn zone(&mut self, zone: String) -> &mut SvcQuery {
         self.zone.replace(zone);
         self
     }
 
     fn add_zone_to_args(&self, args: &mut Vec<String>) {
-        // TODO: Add support for "-Z", all zones.
+        // TODO-feature: Add support for "-Z", all zones.
         if let Some(zone) = &self.zone {
             args.push("-z".to_string());
             args.push(zone.to_string());
@@ -250,63 +260,130 @@ impl ServiceQuery {
         );
     }
 
-    fn issue_status_command(&self, args: Vec<String>) -> Result<impl Iterator<Item = SvcStatus>, String> {
-        Ok(
-            std::process::Command::new("/usr/bin/svcs")
-                .env_clear()
-                .args(args)
-                .output()
-                .map_err(|err| err.to_string())?
-                .read_stdout()?
-                .split('\n')
-                .map(|s| {
-                    s.parse::<SvcStatus>()
-                })
-                .collect::<Result<Vec<SvcStatus>, _>>()?
-                .into_iter()
-        )
+    // Issues command, returns stdout.
+    fn issue_command(
+        &self,
+        args: Vec<String>,
+    ) -> Result<String, String> {
+        Ok(std::process::Command::new("/usr/bin/svcs")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(|err| err.to_string())?
+            .read_stdout()?)
+    }
 
+    fn issue_status_command(
+        &self,
+        args: Vec<String>,
+    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
+        Ok(self.issue_command(args)?
+            .split('\n')
+            .map(|s| s.parse::<SvcStatus>())
+            .collect::<Result<Vec<SvcStatus>, _>>()?
+            .into_iter())
+    }
+
+    // TODO: Probably should be able to fail
+    fn add_patterns<T: AsRef<str>>(&self, args: &mut Vec<String>, patterns: &Vec<T>) {
+        args.append(
+            &mut patterns
+                .into_iter()
+                .map(|p| p.as_ref().to_owned())
+                .collect(),
+        );
     }
 
     /// Queries for status information from the corresponding query.
-    pub fn get_status(&self, selection: ServiceSelection) -> Result<impl Iterator<Item = SvcStatus>, String> {
+    ///
+    /// Returns status information for all services which match the
+    /// [SvcSelection] argument.
+    pub fn get_status(
+        &self,
+        selection: SvcSelection,
+    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
         let mut args = vec![];
 
         self.add_zone_to_args(&mut args);
         self.add_columns_to_args(&mut args);
 
         match &selection {
-            ServiceSelection::All => args.push("-a".to_string()),
-            ServiceSelection::ByRestarter(restarter) => args.push(format!("-R {}", restarter)) ,
-            ServiceSelection::ByPattern(names) => args.append(&mut names.clone()),
+            SvcSelection::All => args.push("-a".to_string()),
+            SvcSelection::ByRestarter(restarter) => args.push(format!("-R {}", restarter)),
+            SvcSelection::ByPattern(names) => self.add_patterns(&mut args, names),
         }
 
         self.issue_status_command(args)
     }
 
-    fn get_dep_variant(&self, mut args: Vec<String>, patterns: Vec<String>) -> Result<impl Iterator<Item = SvcStatus>, String> {
+    fn get_dep_variant<T: AsRef<str>>(
+        &self,
+        mut args: Vec<String>,
+        patterns: Vec<T>,
+    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
         self.add_zone_to_args(&mut args);
         self.add_columns_to_args(&mut args);
-        args.append(&mut patterns.clone());
+
+        // XXX patterns need cleaning, same in other getters
+        self.add_patterns(&mut args, &patterns);
 
         self.issue_status_command(args)
     }
 
-    pub fn get_dependencies_of(&self, patterns: Vec<String>) -> Result<impl Iterator<Item = SvcStatus>, String> {
+    /// Returns the statuses of service instances upon which the provided
+    /// instances depend.
+    ///
+    /// ```no_run
+    /// use smf::SvcQuery;
+    /// let service_statuses = SvcQuery::new()
+    ///     .get_dependencies_of(vec!["svcs:/system/filesystem/minimal"])
+    ///     .unwrap();
+    /// // `service_statuses` includes services which boot before the
+    /// // minimal filesystem.
+    /// ```
+    pub fn get_dependencies_of<T: AsRef<str>>(
+        &self,
+        patterns: Vec<T>,
+    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
         let args = vec!["-d".to_string()];
         self.get_dep_variant(args, patterns)
     }
 
-    pub fn get_dependents_of(&self, patterns: Vec<String>) -> Result<impl Iterator<Item = SvcStatus>, String> {
+    /// Returns the statuses of service instances that depend on the
+    /// provided instances.
+    ///
+    /// ```no_run
+    /// use smf::SvcQuery;
+    /// let service_statuses = SvcQuery::new()
+    ///     .get_dependents_of(vec!["svcs:/system/filesystem/minimal"])
+    ///     .unwrap();
+    /// // `service_statuses` includes services which need a minimal
+    /// // filesystem.
+    /// ```
+    pub fn get_dependents_of<T: AsRef<str>>(
+        &self,
+        patterns: Vec<T>,
+    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
         let args = vec!["-D".to_string()];
         self.get_dep_variant(args, patterns)
     }
 
-    // TODO: test deps formats
-
-    // TODO: list format
-
-    // TODO: -x format
+    /// Acquires the log files for services which match the provided FMRIs
+    /// or glob patterns.
+    pub fn get_log_files<T: AsRef<str>>(
+        &self,
+        patterns: Vec<T>
+    ) -> Result<impl Iterator<Item = PathBuf>, String> {
+        let mut args = vec!["-L".to_string()];
+        self.add_zone_to_args(&mut args);
+        self.add_patterns(&mut args, &patterns);
+        Ok(self.issue_command(args)?
+            .split('\n')
+            .map(|s| s.parse::<PathBuf>())
+            .collect::<Result<Vec<PathBuf>, _>>().unwrap()
+            .into_iter()
+        )
+    }
 }
 
 /*
@@ -375,8 +452,7 @@ mod tests {
         let svc = "system/filesystem/root";
         let fmri = format!("svc:/{}:{}", svc, inst);
 
-        let query = ServiceQuery::new()
-            .get_status(ServiceSelection::ByPattern(vec![fmri.clone()]));
+        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(vec![fmri.clone()]));
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
@@ -395,10 +471,10 @@ mod tests {
         let svc_root = "system/filesystem/root";
         let svc_usr = "system/filesystem/usr";
 
-        let query = ServiceQuery::new()
-            .get_status(
-                ServiceSelection::ByPattern(vec![svc_usr.to_string(), svc_root.to_string()])
-            );
+        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(vec![
+            svc_usr.to_string(),
+            svc_root.to_string(),
+        ]));
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
@@ -414,16 +490,15 @@ mod tests {
 
     #[test]
     fn test_svcs_get_status_all() {
-        let query = ServiceQuery::new()
-            .get_status(ServiceSelection::All);
+        let query = SvcQuery::new().get_status(SvcSelection::All);
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
         );
     }
 
-    // TODO: Queries w/flags in them? (Filter them out / flag as errors!)
-    // TODO: Test zones?
-    // TODO: Repeated names?
-    // TODO: Test failures?
+    // TODO-test: Queries w/flags in them? (Filter them out / flag as errors!)
+    // TODO-test: Test zones?
+    // TODO-test: Repeated names?
+    // TODO-test: Test failures?
 }
