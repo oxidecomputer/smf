@@ -5,4 +5,11 @@ pub use crate::smf::{
     SvcQuery,
     SvcStatus,
     SMFState,
+    SvcAdm,
+    SvcAdmSubcommand,
+    SvcAdmEnable,
+    SvcAdmDisable,
+    SvcAdmRestart,
+    SvcAdmRefresh,
+    SvcAdmClear,
 };

@@ -4,9 +4,11 @@
 
 // TODO-docs: DOCS ON EVERYTHING
 // TODO-err: Better error types (thiserror)
+// TODO-convenience functions for "non pattern arguments" (one in one out)?
 
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::string::ToString;
 
 trait OutputExt {
     fn read_stdout(&self) -> Result<String, String>;
@@ -31,8 +33,7 @@ impl OutputExt for std::process::Output {
 
 /// Describes the state of a service.
 ///
-/// For more information, refer to the "States" section of the
-/// smf man page.
+/// For more information, refer to the "States" section of the smf man page.
 #[derive(Debug, PartialEq)]
 pub enum SMFState {
     Disabled,
@@ -42,13 +43,11 @@ pub enum SMFState {
     Online,
     Legacy,
     Uninitialized,
-    Other(String),
 }
 
 impl SMFState {
     fn from_str(val: &str) -> Option<SMFState> {
         match val {
-            "-" => None,
             "ON" => Some(SMFState::Online),
             "OFF" => Some(SMFState::Offline),
             "DGD" => Some(SMFState::Degraded),
@@ -56,22 +55,22 @@ impl SMFState {
             "MNT" => Some(SMFState::Maintenance),
             "UN" => Some(SMFState::Uninitialized),
             "LRC" => Some(SMFState::Legacy),
-            s => Some(SMFState::Other(s.to_string())),
+            _ => None,
         }
     }
 }
 
-/*
- *
- * FMRI
- *
- */
-
-struct FMRI(String);
-
-impl std::string::ToString for FMRI {
+impl ToString for SMFState {
     fn to_string(&self) -> String {
-        self.0.clone()
+        match self {
+            SMFState::Disabled => "DIS",
+            SMFState::Degraded => "DGD",
+            SMFState::Maintenance => "MNT",
+            SMFState::Offline => "OFF",
+            SMFState::Online => "ON",
+            SMFState::Legacy => "LRC",
+            SMFState::Uninitialized => "UN",
+        }.to_string()
     }
 }
 
@@ -223,7 +222,7 @@ impl SvcQuery {
         SvcQuery { zone: None }
     }
 
-    /// Request a query be issued within a specific zone.
+    /// Requests a query be issued within a specific zone.
     pub fn zone(&mut self, zone: String) -> &mut SvcQuery {
         self.zone.replace(zone);
         self
@@ -260,6 +259,11 @@ impl SvcQuery {
         );
     }
 
+    // XXX three commands below don't really act on 'self', they sorta
+    // act on the args?
+    //
+    // TODO: Check for overlap with other commands
+
     // Issues command, returns stdout.
     fn issue_command(
         &self,
@@ -284,11 +288,12 @@ impl SvcQuery {
             .into_iter())
     }
 
-    // TODO: Probably should be able to fail
-    fn add_patterns<T: AsRef<str>>(&self, args: &mut Vec<String>, patterns: &Vec<T>) {
+    // TODO: Probably should be able to fail.
+    // TODO: Check that patterns != flags
+    fn add_patterns<T: AsRef<str>>(&self, args: &mut Vec<String>, patterns: &[T]) {
         args.append(
             &mut patterns
-                .into_iter()
+                .iter()
                 .map(|p| p.as_ref().to_owned())
                 .collect(),
         );
@@ -392,9 +397,314 @@ impl SvcQuery {
  *
  */
 
+// struct SvcConfig {}
+
+// TODO:
+// "-s FMRI" operates on FMRI. BEFORE subcommands. Optional.
+
+
 /*
  *
  * SVCADM
+ *
+ */
+
+/// Determines which services are returned from [SvcAdm] operations.
+pub enum SvcAdmSelection {
+    /// Selects all services which are in the provided state.
+    ByState(SMFState),
+    /// All service instance which match the provided strings as either an FMRI
+    /// or pattern (globs allowed) matching FMRIs.
+    ByPattern(Vec<String>),
+}
+
+/// Provides tools for changing the state of SMF services.
+///
+/// Acts as a wrapper around the underlying 'svcadm' command.
+pub struct SvcAdm {
+    zone: Option<String>,
+}
+
+impl Default for SvcAdm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SvcAdm {
+    /// Construct a new builder object.
+    pub fn new() -> SvcAdm {
+        SvcAdm { zone: None }
+    }
+
+    fn add_zone_to_args(&self, args: &mut Vec<String>) {
+        // TODO-feature: Add support for "-Z", all zones.
+        if let Some(zone) = &self.zone {
+            args.push("-z".to_string());
+            args.push(zone.to_string());
+        }
+    }
+
+    /// Requests a command be issued within a specific zone.
+    pub fn zone(&mut self, zone: String) -> &mut SvcAdm {
+        self.zone.replace(zone);
+        self
+    }
+
+    fn run(args: Vec<String>) -> Result<(), String> {
+        std::process::Command::new("/usr/sbin/svcadm")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(|err| err.to_string())?
+            .read_stdout()?;
+        Ok(())
+    }
+
+    /// Builds a [SvcAdmEnable] object.
+    pub fn enable(self) -> SvcAdmEnable {
+        SvcAdmEnable::new(self)
+    }
+    /// Builds a [SvcAdmDisable] object.
+    pub fn disable(self) -> SvcAdmDisable {
+        SvcAdmDisable::new(self)
+    }
+    /// Builds a [SvcAdmRestart] object.
+    pub fn restart(self) -> SvcAdmRestart {
+        SvcAdmRestart::new(self)
+    }
+    /// Builds a [SvcAdmRefresh] object.
+    pub fn refresh(self) -> SvcAdmRefresh {
+        SvcAdmRefresh::new(self)
+    }
+    /// Builds a [SvcAdmClear] object.
+    pub fn clear(self) -> SvcAdmClear {
+        SvcAdmClear::new(self)
+    }
+
+    // TODO: Mark, milestone
+}
+
+// Workaround for E0445.
+//
+// This trait should not be exposed externally.
+mod admimpl {
+    /// Private trait to help implement a subcommand.
+    pub trait SvcAdmSubcommandImpl {
+        /// Returns the base SvcAdm object.
+        fn adm(&self) -> &super::SvcAdm;
+
+        /// Returns the name of the svcadm subcommand.
+        fn command_name(&self) -> &str;
+
+        /// Adds subcommand specific arguments.
+        fn add_to_args(&self, args: &mut Vec<String>);
+    }
+}
+
+/// Shared mechanism of running all subcommands created by [SvcAdm].
+pub trait SvcAdmSubcommand : admimpl::SvcAdmSubcommandImpl {
+    /// Executes the provided the command.
+    fn run(&mut self, selection: SvcAdmSelection) -> Result<(), String> {
+        let mut args = vec![];
+
+        self.adm().add_zone_to_args(&mut args);
+
+        match selection {
+            SvcAdmSelection::ByState(state) => {
+                args.push("-S".to_string());
+                args.push(state.to_string());
+                args.push(self.command_name().to_string());
+                self.add_to_args(&mut args);
+            },
+            SvcAdmSelection::ByPattern(mut pattern) => {
+                args.push(self.command_name().to_string());
+                self.add_to_args(&mut args);
+                args.append(&mut pattern);
+            },
+        }
+        SvcAdm::run(args)
+    }
+}
+
+/// Implements a subcomand
+impl <T: admimpl::SvcAdmSubcommandImpl> SvcAdmSubcommand for T {}
+
+/// Enables the service instance(s). The assigned restarter
+/// will attempt to bring the service to the online state.
+/// Use to [SvcAdmSubcommand::run] to invoke.
+pub struct SvcAdmEnable {
+    adm: SvcAdm,
+    recursive: bool,
+    synchronous: bool,
+    temporary: bool,
+}
+
+impl admimpl::SvcAdmSubcommandImpl for SvcAdmEnable {
+    fn adm(&self) -> &SvcAdm { &self.adm }
+    fn command_name(&self) -> &str { "enable" }
+    fn add_to_args(&self, args: &mut Vec<String>) {
+        if self.recursive { args.push("-r".to_string()) }
+        if self.synchronous { args.push("-s".to_string()) }
+        if self.temporary { args.push("-t".to_string()) }
+    }
+}
+
+impl SvcAdmEnable {
+    fn new(adm: SvcAdm) -> Self {
+        SvcAdmEnable {
+            adm,
+            recursive: false,
+            synchronous: false,
+            temporary: false,
+        }
+    }
+
+    /// Recursively enables dependencies of enabled services.
+    pub fn recursive(&mut self) -> &mut Self {
+        self.recursive = true;
+        self
+    }
+    /// Waits for each enabled instance to enter either `online` or `degraded`
+    /// state.
+    pub fn synchronous(&mut self) -> &mut Self {
+        self.synchronous = true;
+        self
+    }
+    /// Temporarily enables each service instance, meaning that
+    /// the decision to enable will only last until reboot.
+    pub fn temporary(&mut self) -> &mut Self {
+        self.temporary = true;
+        self
+    }
+}
+
+/// Disables the service instance(s). The assigned restarter
+/// will attempt to bring the service to the disabled state.
+/// Use to [SvcAdmSubcommand::run] to invoke.
+pub struct SvcAdmDisable {
+    adm: SvcAdm,
+    comment: Option<String>,
+    synchronous: bool,
+    temporary: bool,
+}
+
+impl admimpl::SvcAdmSubcommandImpl for SvcAdmDisable {
+    fn adm(&self) -> &SvcAdm { &self.adm }
+    fn command_name(&self) -> &str { "disable" }
+    fn add_to_args(&self, args: &mut Vec<String>) {
+        if let Some(ref comment) = self.comment {
+            args.push("-c".to_string());
+            args.push(comment.to_string());
+        }
+        if self.synchronous { args.push("-s".to_string()) }
+        if self.temporary { args.push("-t".to_string()) }
+    }
+}
+
+impl SvcAdmDisable {
+    fn new(adm: SvcAdm) -> Self {
+        SvcAdmDisable {
+            adm,
+            comment: None,
+            synchronous: false,
+            temporary: false,
+        }
+    }
+
+    /// Records a general free-form comment in the service configuration.
+    pub fn comment<T: AsRef<str>>(&mut self, comment: T) -> &mut Self {
+        self.comment = Some(comment.as_ref().to_owned());
+        self
+    }
+    /// Waits for each instance to enter either the `disabled` state.
+    pub fn synchronous(&mut self) -> &mut Self {
+        self.synchronous = true;
+        self
+    }
+    /// Temporarily disable each service instance, meaning that the decision to
+    /// disable will only last until reboot.
+    pub fn temporary(&mut self) -> &mut Self {
+        self.temporary = true;
+        self
+    }
+}
+
+/// Requests that the provided service instances are restarted.
+/// Use to [SvcAdmSubcommand::run] to invoke.
+pub struct SvcAdmRestart {
+    adm: SvcAdm,
+    abort: bool
+}
+
+impl admimpl::SvcAdmSubcommandImpl for SvcAdmRestart {
+    fn adm(&self) -> &SvcAdm { &self.adm }
+    fn command_name(&self) -> &str { "restart" }
+    fn add_to_args(&self, args: &mut Vec<String>) {
+        if self.abort { args.push("-d".to_string()) }
+    }
+}
+
+impl SvcAdmRestart {
+    fn new(adm: SvcAdm) -> Self {
+        Self {
+            adm,
+            abort: false,
+        }
+    }
+    /// Requests that the restarter should send a `SIGABRT` signal
+    /// to all members of the contract before restarting the service.
+    pub fn abort(&mut self) -> &mut Self {
+        self.abort = true;
+        self
+    }
+}
+
+/// Requests that the restarter update the configuration snapshot of all
+/// requested services, replacing it with values from the current configuration.
+/// Use to [SvcAdmSubcommand::run] to invoke.
+pub struct SvcAdmRefresh {
+    adm: SvcAdm,
+}
+
+impl admimpl::SvcAdmSubcommandImpl for SvcAdmRefresh {
+    fn adm(&self) -> &SvcAdm { &self.adm }
+    fn command_name(&self) -> &str { "refresh" }
+    fn add_to_args(&self, _args: &mut Vec<String>) {}
+}
+
+impl SvcAdmRefresh {
+    fn new(adm: SvcAdm) -> Self {
+        Self {
+            adm,
+        }
+    }
+}
+
+/// Requests that all provided services, if they are in the `maintenance`
+/// state, are repaired.
+/// Use to [SvcAdmSubcommand::run] to invoke.
+pub struct SvcAdmClear {
+    adm: SvcAdm,
+}
+
+impl admimpl::SvcAdmSubcommandImpl for SvcAdmClear {
+    fn adm(&self) -> &SvcAdm { &self.adm }
+    fn command_name(&self) -> &str { "clear" }
+    fn add_to_args(&self, _args: &mut Vec<String>) {}
+}
+
+impl SvcAdmClear {
+    fn new(adm: SvcAdm) -> Self {
+        Self {
+            adm,
+        }
+    }
+}
+
+/*
+ *
+ * SVCPROP
  *
  */
 
