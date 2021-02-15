@@ -193,15 +193,19 @@ impl SvcColumn {
 }
 
 /// Determines which services are returned from [SvcQuery::get_status]
-pub enum SvcSelection {
+pub enum SvcSelection<S = String, I = Vec<String>>
+where
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+{
     /// All services instances.
     All,
     /// All service instances which have the provided service instance as their
     /// restarter.
-    ByRestarter(String),
+    ByRestarter(S),
     /// All service instance which match the provided strings as either an FMRI
     /// or pattern (globs allowed) matching FMRIs.
-    ByPattern(Vec<String>),
+    ByPattern(I),
 }
 
 /// Queries the underlying system to return [SvcStatus] structures.
@@ -223,8 +227,8 @@ impl SvcQuery {
     }
 
     /// Requests a query be issued within a specific zone.
-    pub fn zone(&mut self, zone: String) -> &mut SvcQuery {
-        self.zone.replace(zone);
+    pub fn zone<S: AsRef<str>>(&mut self, zone: S) -> &mut SvcQuery {
+        self.zone.replace(zone.as_ref().into());
         self
     }
 
@@ -290,41 +294,69 @@ impl SvcQuery {
 
     // TODO: Probably should be able to fail.
     // TODO: Check that patterns != flags
-    fn add_patterns<T: AsRef<str>>(&self, args: &mut Vec<String>, patterns: &[T]) {
+    fn add_patterns<S, I>(&self, args: &mut Vec<String>, patterns: I)
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
         args.append(
             &mut patterns
-                .iter()
+                .into_iter()
                 .map(|p| p.as_ref().to_owned())
                 .collect(),
         );
+    }
+
+    /// Syntactic sugar for [SvcQuery::get_status] with a selection of
+    /// [SvcSelection::All].
+    ///
+    /// See: [The corresponding Rust issue on inferred default
+    /// types](https://github.com/rust-lang/rust/issues/27336) for more context.
+    pub fn get_status_all(
+        &self,
+    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
+        // The `SvcSelection::All` variant of the enum doesn't actually
+        // use the type parameters at all, so it doesn't care what
+        // types are supplied as argument.
+        //
+        // Rather than forcing the client of this library to deal with this
+        // quirk, this helper provides reasonable default.
+        self.get_status(SvcSelection::<String, Vec<String>>::All)
     }
 
     /// Queries for status information from the corresponding query.
     ///
     /// Returns status information for all services which match the
     /// [SvcSelection] argument.
-    pub fn get_status(
+    pub fn get_status<S, I>(
         &self,
-        selection: SvcSelection,
-    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
+        selection: SvcSelection<S, I>,
+    ) -> Result<impl Iterator<Item = SvcStatus>, String>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
         let mut args = vec![];
 
         self.add_zone_to_args(&mut args);
         self.add_columns_to_args(&mut args);
 
-        match &selection {
+        match selection {
             SvcSelection::All => args.push("-a".to_string()),
-            SvcSelection::ByRestarter(restarter) => args.push(format!("-R {}", restarter)),
+            SvcSelection::ByRestarter(restarter) => {
+                args.push(format!("-R {}", restarter.as_ref()));
+            },
             SvcSelection::ByPattern(names) => self.add_patterns(&mut args, names),
         }
 
         self.issue_status_command(args)
     }
 
-    fn get_dep_variant<T: AsRef<str>>(
+    // Shared implementation for getting dependencies and dependents.
+    fn get_dep_impl<S: AsRef<str>>(
         &self,
         mut args: Vec<String>,
-        patterns: Vec<T>,
+        patterns: Vec<S>,
     ) -> Result<impl Iterator<Item = SvcStatus>, String> {
         self.add_zone_to_args(&mut args);
         self.add_columns_to_args(&mut args);
@@ -346,12 +378,12 @@ impl SvcQuery {
     /// // `service_statuses` includes services which boot before the
     /// // minimal filesystem.
     /// ```
-    pub fn get_dependencies_of<T: AsRef<str>>(
+    pub fn get_dependencies_of<S: AsRef<str>>(
         &self,
-        patterns: Vec<T>,
+        patterns: Vec<S>,
     ) -> Result<impl Iterator<Item = SvcStatus>, String> {
         let args = vec!["-d".to_string()];
-        self.get_dep_variant(args, patterns)
+        self.get_dep_impl(args, patterns)
     }
 
     /// Returns the statuses of service instances that depend on the
@@ -365,19 +397,19 @@ impl SvcQuery {
     /// // `service_statuses` includes services which need a minimal
     /// // filesystem.
     /// ```
-    pub fn get_dependents_of<T: AsRef<str>>(
+    pub fn get_dependents_of<S: AsRef<str>>(
         &self,
-        patterns: Vec<T>,
+        patterns: Vec<S>,
     ) -> Result<impl Iterator<Item = SvcStatus>, String> {
         let args = vec!["-D".to_string()];
-        self.get_dep_variant(args, patterns)
+        self.get_dep_impl(args, patterns)
     }
 
     /// Acquires the log files for services which match the provided FMRIs
     /// or glob patterns.
-    pub fn get_log_files<T: AsRef<str>>(
+    pub fn get_log_files<S: AsRef<str>>(
         &self,
-        patterns: Vec<T>
+        patterns: Vec<S>
     ) -> Result<impl Iterator<Item = PathBuf>, String> {
         let mut args = vec!["-L".to_string()];
         self.add_zone_to_args(&mut args);
@@ -410,12 +442,16 @@ impl SvcQuery {
  */
 
 /// Determines which services are returned from [SvcAdm] operations.
-pub enum SvcAdmSelection {
+pub enum SvcAdmSelection<S, I>
+where
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+{
     /// Selects all services which are in the provided state.
     ByState(SMFState),
     /// All service instance which match the provided strings as either an FMRI
     /// or pattern (globs allowed) matching FMRIs.
-    ByPattern(Vec<String>),
+    ByPattern(I),
 }
 
 /// Provides tools for changing the state of SMF services.
@@ -446,8 +482,8 @@ impl SvcAdm {
     }
 
     /// Requests a command be issued within a specific zone.
-    pub fn zone(&mut self, zone: String) -> &mut SvcAdm {
-        self.zone.replace(zone);
+    pub fn zone<S: AsRef<str>>(&mut self, zone: S) -> &mut SvcAdm {
+        self.zone.replace(zone.as_ref().into());
         self
     }
 
@@ -462,6 +498,16 @@ impl SvcAdm {
     }
 
     /// Builds a [SvcAdmEnable] object.
+    ///
+    /// ```no_run
+    /// use smf::{SvcAdm, SvcAdmSelection, SvcAdmSubcommand};
+    ///
+    /// SvcAdm::new()
+    ///     .enable()
+    ///     .synchronous()
+    ///     .run(SvcAdmSelection::ByPattern(&["service"]))
+    ///     .unwrap();
+    /// ```
     pub fn enable(self) -> SvcAdmEnable {
         SvcAdmEnable::new(self)
     }
@@ -505,7 +551,11 @@ mod admimpl {
 /// Shared mechanism of running all subcommands created by [SvcAdm].
 pub trait SvcAdmSubcommand : admimpl::SvcAdmSubcommandImpl {
     /// Executes the provided the command.
-    fn run(&mut self, selection: SvcAdmSelection) -> Result<(), String> {
+    fn run<S, I>(&mut self, selection: SvcAdmSelection<S, I>) -> Result<(), String>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
         let mut args = vec![];
 
         self.adm().add_zone_to_args(&mut args);
@@ -517,10 +567,10 @@ pub trait SvcAdmSubcommand : admimpl::SvcAdmSubcommandImpl {
                 args.push(self.command_name().to_string());
                 self.add_to_args(&mut args);
             },
-            SvcAdmSelection::ByPattern(mut pattern) => {
+            SvcAdmSelection::ByPattern(pattern) => {
                 args.push(self.command_name().to_string());
                 self.add_to_args(&mut args);
-                args.append(&mut pattern);
+                args.extend(pattern.into_iter().map(|s| s.as_ref().to_string()));
             },
         }
         SvcAdm::run(args)
@@ -613,7 +663,7 @@ impl SvcAdmDisable {
     }
 
     /// Records a general free-form comment in the service configuration.
-    pub fn comment<T: AsRef<str>>(&mut self, comment: T) -> &mut Self {
+    pub fn comment<S: AsRef<str>>(&mut self, comment: S) -> &mut Self {
         self.comment = Some(comment.as_ref().to_owned());
         self
     }
@@ -761,8 +811,9 @@ mod tests {
         let inst = "default";
         let svc = "system/filesystem/root";
         let fmri = format!("svc:/{}:{}", svc, inst);
+        let pattern = [&fmri];
 
-        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(vec![fmri.clone()]));
+        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(&pattern));
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
@@ -780,11 +831,9 @@ mod tests {
     fn test_svcs_query_multiple() {
         let svc_root = "system/filesystem/root";
         let svc_usr = "system/filesystem/usr";
+        let pattern = [svc_usr, svc_root];
 
-        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(vec![
-            svc_usr.to_string(),
-            svc_root.to_string(),
-        ]));
+        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(&pattern));
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
@@ -800,7 +849,16 @@ mod tests {
 
     #[test]
     fn test_svcs_get_status_all() {
-        let query = SvcQuery::new().get_status(SvcSelection::All);
+        let query = SvcQuery::new().get_status_all();
+        assert!(
+            query.is_ok(),
+            format!("Unexpected err: {}", query.err().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_svcs_get_status_all_global_zone() {
+        let query = SvcQuery::new().zone("global").get_status_all();
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())

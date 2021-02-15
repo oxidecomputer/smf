@@ -6,6 +6,7 @@ pub use crate::smf::{
     SvcStatus,
     SMFState,
     SvcAdm,
+    SvcAdmSelection,
     SvcAdmSubcommand,
     SvcAdmEnable,
     SvcAdmDisable,
