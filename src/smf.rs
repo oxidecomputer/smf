@@ -269,23 +269,25 @@ impl SvcQuery {
     // TODO: Check for overlap with other commands
 
     // Issues command, returns stdout.
-    fn issue_command(
+    async fn issue_command(
         &self,
         args: Vec<String>,
     ) -> Result<String, String> {
-        Ok(std::process::Command::new("/usr/bin/svcs")
+        Ok(tokio::process::Command::new("/usr/bin/svcs")
             .env_clear()
             .args(args)
             .output()
+            .await
             .map_err(|err| err.to_string())?
             .read_stdout()?)
     }
 
-    fn issue_status_command(
+    async fn issue_status_command(
         &self,
         args: Vec<String>,
     ) -> Result<impl Iterator<Item = SvcStatus>, String> {
-        Ok(self.issue_command(args)?
+        Ok(self.issue_command(args)
+            .await?
             .split('\n')
             .map(|s| s.parse::<SvcStatus>())
             .collect::<Result<Vec<SvcStatus>, _>>()?
@@ -312,23 +314,23 @@ impl SvcQuery {
     ///
     /// See: [The corresponding Rust issue on inferred default
     /// types](https://github.com/rust-lang/rust/issues/27336) for more context.
-    pub fn get_status_all(
+    pub async fn get_status_all(
         &self,
     ) -> Result<impl Iterator<Item = SvcStatus>, String> {
-        // The `SvcSelection::All` variant of the enum doesn't actually
-        // use the type parameters at all, so it doesn't care what
-        // types are supplied as argument.
+        // The `SvcSelection::All` variant of the enum doesn't actually use the
+        // type parameters at all, so it doesn't care what types are supplied as
+        // parameters.
         //
         // Rather than forcing the client of this library to deal with this
         // quirk, this helper provides reasonable default.
-        self.get_status(SvcSelection::<String, Vec<String>>::All)
+        self.get_status(SvcSelection::<String, Vec<String>>::All).await
     }
 
     /// Queries for status information from the corresponding query.
     ///
     /// Returns status information for all services which match the
     /// [SvcSelection] argument.
-    pub fn get_status<S, I>(
+    pub async fn get_status<S, I>(
         &self,
         selection: SvcSelection<S, I>,
     ) -> Result<impl Iterator<Item = SvcStatus>, String>
@@ -349,11 +351,11 @@ impl SvcQuery {
             SvcSelection::ByPattern(names) => self.add_patterns(&mut args, names),
         }
 
-        self.issue_status_command(args)
+        self.issue_status_command(args).await
     }
 
     // Shared implementation for getting dependencies and dependents.
-    fn get_dep_impl<S: AsRef<str>>(
+    async fn get_dep_impl<S: AsRef<str>>(
         &self,
         mut args: Vec<String>,
         patterns: Vec<S>,
@@ -364,7 +366,7 @@ impl SvcQuery {
         // XXX patterns need cleaning, same in other getters
         self.add_patterns(&mut args, &patterns);
 
-        self.issue_status_command(args)
+        self.issue_status_command(args).await
     }
 
     /// Returns the statuses of service instances upon which the provided
@@ -372,18 +374,23 @@ impl SvcQuery {
     ///
     /// ```no_run
     /// use smf::SvcQuery;
-    /// let service_statuses = SvcQuery::new()
-    ///     .get_dependencies_of(vec!["svcs:/system/filesystem/minimal"])
-    ///     .unwrap();
-    /// // `service_statuses` includes services which boot before the
-    /// // minimal filesystem.
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///   let service_statuses = SvcQuery::new()
+    ///       .get_dependencies_of(vec!["svcs:/system/filesystem/minimal"])
+    ///       .await
+    ///       .unwrap();
+    ///   // `service_statuses` includes services which boot before the
+    ///   // minimal filesystem.
+    /// }
     /// ```
-    pub fn get_dependencies_of<S: AsRef<str>>(
+    pub async fn get_dependencies_of<S: AsRef<str>>(
         &self,
         patterns: Vec<S>,
     ) -> Result<impl Iterator<Item = SvcStatus>, String> {
         let args = vec!["-d".to_string()];
-        self.get_dep_impl(args, patterns)
+        self.get_dep_impl(args, patterns).await
     }
 
     /// Returns the statuses of service instances that depend on the
@@ -391,30 +398,36 @@ impl SvcQuery {
     ///
     /// ```no_run
     /// use smf::SvcQuery;
-    /// let service_statuses = SvcQuery::new()
-    ///     .get_dependents_of(vec!["svcs:/system/filesystem/minimal"])
-    ///     .unwrap();
-    /// // `service_statuses` includes services which need a minimal
-    /// // filesystem.
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///   let service_statuses = SvcQuery::new()
+    ///       .get_dependents_of(vec!["svcs:/system/filesystem/minimal"])
+    ///       .await
+    ///       .unwrap();
+    ///   // `service_statuses` includes services which need a minimal
+    ///   // filesystem.
+    /// }
     /// ```
-    pub fn get_dependents_of<S: AsRef<str>>(
+    pub async fn get_dependents_of<S: AsRef<str>>(
         &self,
         patterns: Vec<S>,
     ) -> Result<impl Iterator<Item = SvcStatus>, String> {
         let args = vec!["-D".to_string()];
-        self.get_dep_impl(args, patterns)
+        self.get_dep_impl(args, patterns).await
     }
 
     /// Acquires the log files for services which match the provided FMRIs
     /// or glob patterns.
-    pub fn get_log_files<S: AsRef<str>>(
+    pub async fn get_log_files<S: AsRef<str>>(
         &self,
         patterns: Vec<S>
     ) -> Result<impl Iterator<Item = PathBuf>, String> {
         let mut args = vec!["-L".to_string()];
         self.add_zone_to_args(&mut args);
         self.add_patterns(&mut args, &patterns);
-        Ok(self.issue_command(args)?
+        Ok(self.issue_command(args)
+            .await?
             .split('\n')
             .map(|s| s.parse::<PathBuf>())
             .collect::<Result<Vec<PathBuf>, _>>().unwrap()
@@ -806,14 +819,14 @@ mod tests {
         assert_eq!(status, expected);
     }
 
-    #[test]
-    fn test_svcs_query_one() {
+    #[tokio::test]
+    async fn test_svcs_query_one() {
         let inst = "default";
         let svc = "system/filesystem/root";
         let fmri = format!("svc:/{}:{}", svc, inst);
         let pattern = [&fmri];
 
-        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(&pattern));
+        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(&pattern)).await;
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
@@ -827,13 +840,13 @@ mod tests {
         assert!(results.next().is_none());
     }
 
-    #[test]
-    fn test_svcs_query_multiple() {
+    #[tokio::test]
+    async fn test_svcs_query_multiple() {
         let svc_root = "system/filesystem/root";
         let svc_usr = "system/filesystem/usr";
         let pattern = [svc_usr, svc_root];
 
-        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(&pattern));
+        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(&pattern)).await;
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
@@ -847,18 +860,18 @@ mod tests {
         assert!(results.next().is_none());
     }
 
-    #[test]
-    fn test_svcs_get_status_all() {
-        let query = SvcQuery::new().get_status_all();
+    #[tokio::test]
+    async fn test_svcs_get_status_all() {
+        let query = SvcQuery::new().get_status_all().await;
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
         );
     }
 
-    #[test]
-    fn test_svcs_get_status_all_global_zone() {
-        let query = SvcQuery::new().zone("global").get_status_all();
+    #[tokio::test]
+    async fn test_svcs_get_status_all_global_zone() {
+        let query = SvcQuery::new().zone("global").get_status_all().await;
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
