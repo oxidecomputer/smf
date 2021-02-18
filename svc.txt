@@ -1,0 +1,246 @@
+SMF: "Service Management Facility", name for this subsystem of illumos.
+This document attempts to provide a whirlwind tour for the high level
+systems, but is by no means exhaustive.
+
+For more detail, jump into the man pages.
+  $ man smf
+
+FMRI: The format of service and service instance names.
+This is an acronym for "Fault Management Resource Indicator", but is usually
+synonymous with "the full name for something" on illumos - either a package,
+service, instance, or something else.
+
+Service: Abstract representation of an application.
+Services includes configuration and management information for an application,
+device, or set of other services.
+  Example FMRI: svc:/system/system-log
+                     ^^^^^^^^^^^^^^^^^
+                     | Service Name.
+  Can be inspected with: svccfg(1), e.g.:
+  $ svccfg list
+
+  This command shows all services known to SMF's configuration service. Note
+  that this is a list of "all services that COULD be launched", not necessarily
+  a picture of "services that are running".
+
+Service Instance: An instantiation of a service.
+Services may be instantiated multiple times, in which case multiple distinct
+instances (with their own processes) would exist for a single service.
+  Example FMRI: svc:/system/system-log:default
+                                       ^^^^^^^
+                                       | Instance Name.
+  Can be inspected with: svcs(1), e.g.:
+  $ svcs
+
+  To see the processes allocated to each instance:
+  $ svcs -p
+
+  Service instances are always in one of a few well-defined states, including
+  but not limited to:
+  - DISABLED: The instance is not currently running (no processes), and there is
+    no intention for the instance to be running.
+  - OFFLINE: The instance is enabled, but is not yet running. Instances will
+    transition to another state if they are OFFLINE, either becoming ONLINE or
+    moving to some other "enabled-but-not-fully-running" state.
+  - ONLINE: The instance is enabled and running.
+
+  For the full list of service states, refer to:
+  $ man smf
+
+  Service states can be manipulated from the command line, using
+  the svcadm(1M) tool, e.g.:
+  # Tries to bring the instance into the online state.
+  $ svcadm enable svc:/network/ssh:default
+  # Tries to bring the instance into the disabled state.
+  $ svcadm disable svc:/network/ssh:default
+
+Restarter: A service that is reponsible for monitoring, starting, and restarting
+other services. svc.startd(1m) is the "master restarter" for the system, meaning
+that it is responsible for managing many other system services. The master
+restarter has the FMRI "svc:/system/svc/restarter:default", and is implemented
+by the svc.startd process. Services may define alternate restarters
+(effectively, new "service managers") and may depend on these alternate
+restarters.
+
+"Properties": A set of key/value pairs describing a service or service instance.
+Organized into groups which are aptly named "property groups" - as an example,
+the executable (or script) to invoke when a service starts is stored as
+"start/exec", which is the "exec" property within the "start" property group.
+
+Service Manifest: An XML file describing a service. Consists of "properties"
+about a service, including dependencies, how to start/stop the service, and
+other configuration variables. Manifests contain key/value pairs of information
+about a service known as "properties", which are organized in groups named
+"property groups".  The format of manifests used by SMF services are documented
+in service_bundle(4).
+  Manifests can be inspected with: svccfg(1M), e.g.:
+  $ svccfg export svc:/network/ssh
+
+  For a more detailed explanation of what properties mean:
+  $ svccfg -s svc:/network/ssh describe -v
+
+  Properties currently used by a service can be inspected with: svcprop(1), e.g.:
+  $ svcprop svc:/network/ssh
+
+Service properties are loaded from these manifests into an object representing
+the service.
+
+    *---------*
+    | SERVICE |
+    *---------*
+      ^
+      | Directly Attached Properties (loaded from XML file)
+
+These properties are directly attached to the service object, and are
+intuitively referred to as "directly attached" properties. This clarification
+is important to make early - later on, as we'll see, properties are calculated
+from a combination of sources and used indirectly.
+
+When a service instance is created, the restarter (often svc.startd) creates
+an entity representing the instance. The service instance has its own directly
+attached properties, which (initially) will only contain the "general/enabled"
+property, identifying if the instance is enabled or disabled.
+
+    *---------*
+    | SERVICE |
+    *---------*
+      ^
+      | Directly Attached Properties (loaded from XML file)
+
+    *------------------*
+    | SERVICE INSTANCE |
+    *------------------*
+      ^
+      | Directly Attached Properties (just "general/enabled")
+
+As soon as the service instance is created, SMF creates a "snapshot", or an
+immutable set of properties taken by adding the directly attached properties of
+the service with the directly attached properties of the service instance.
+
+    *---------*
+    | SERVICE |
+    *---------*
+      ^                                           *----------*
+      | Directly Attached Properties >>>>>>>>+>>> | SNAPSHOT |
+                                             ^    *----------*
+    *------------------*                     ^
+    | SERVICE INSTANCE |                     ^
+    *------------------*                     ^
+      ^                                      ^
+      | Directly Attached Properties >>>>>>>>^
+
+Snapshots can be thought of as "the properties being used at a specific point in
+time". This first snapshot is called "initial", and the most recently created
+snapshot is usually called "running".
+
+  A list of snapshots can be inspected with: svccfg(1M), e.g.:
+  $ svccfg -s svc:/network/ssh:default listsnap
+
+  The contents of these snapshots can be displayed with:
+  $ svcprop -r running svc:/network/ssh:default
+
+As the service instance continues executing, additional properties may be
+directly added to it, including persistent and non-persistent properties.
+Persistent properties are ones that last beyond reboot (like those loaded from
+the XML file), while non-persistent properties are transient across reboot
+(containing information like PIDs). When snapshots are taken by SMF, they
+continue to combine the directly attached properties of the service with
+the persistent directly attached properties of the instance.
+
+Hopefully the rationale here is intuitive - it wouldn't make sense for a durable
+snapshot to contain information that could become stale by power cycling.
+
+    *---------*
+    | SERVICE |
+    *---------*
+      ^                                           *----------*
+      | Directly Attached Properties >>>>>>>>+>>> | SNAPSHOT |
+                                             ^    *----------*
+    *------------------*                     ^
+    | SERVICE INSTANCE |                     ^
+    *------------------*                     ^
+      ^                                      ^
+      | Directly Attached Properties         ^
+      |            =                         ^
+      | Persistent Properties >>>>>>>>>>>>>>>^
+      |            +
+      | Non-persistent properties
+
+SMF tries to deliver a view of properties that is "composed" - in other words,
+it tries to expose a view of properties such that:
+- If the property exists in the service instance, it is used directly.
+- If the property does not exist in the service instance, it is used from
+  the service's directly attached properties instead.
+This relationship allows many instances of a service to share common
+configuration with the "service" object implicitly.
+
+When clients of SMF want to interact with instances, they interact with the
+"effective properties" of an instance. This is a combination of properties
+that shows all of:
+- Properties "composed" from the service object.
+- Properties which are specific to the service instance.
+- Non-persistent properties.
+
+    *---------*
+    | SERVICE |
+    *---------*
+      ^                                           *------------------*
+      | Directly Attached Properties >>>>>>>>+>>> | RUNNING SNAPSHOT |
+                                             ^    *------------------*
+    *------------------*                     ^            v
+    | SERVICE INSTANCE |                     ^            v
+    *------------------*                     ^            v
+      ^                                      ^            v
+      | Directly Attached Properties         ^            v
+      |            =                         ^            v
+      | Persistent Properties >>>>>>>>>>>>>>>^            v
+      |            +                          *-------------------------------*
+      | Non-persistent properties >>>>>>>>>>> | EFFECTIVE INSTANCE PROPERTIES |
+                                              *-------------------------------*
+
+Properties can be updated for both instances and services:
+  $ svccfg -s svc:/network/ssh[:default] setprop general/comment = astring: "my-comment"
+  # For exact syntax, see the svccfg man page, the important detail is that
+  # they CAN be modified.
+
+When properties are updated, they update the directly attached properties
+of either a service or service instance. However, note that updating
+properties DOES NOT generate a new snapshot. As a result, if either of
+the following are modified:
+- Directly attached service properties, or
+- Directly attached persistent service instance properties,
+The update will not immediately propagate, as an "older" snapshot will
+be in-use.
+
+As an example:
+  $ svccfg -s svc:/network/ssh:default setprop general/comment = astring: "my-comment"
+  $ svcprop -p general/comment svc:/network/ssh:default
+  # Probably won't see the updated comment!
+
+To actually update the effective properties of a service instance, a new
+snapshot must be taken. This can be executed with the following command:
+  $ svcadm refresh svc:/network/ssh:default
+
+Miscellaneous:
+
+The following are commands to see some of the aforementioned properties:
+
+To see directly attached properties:
+  $ svcprop -C svc:/network/ssh[default]
+
+To see the "composed view of directly attached properties" (aka, what *would*
+be the effective properties if a new snapshot was taken):
+  $ svcprop -c svc:/network/ssh[default]
+
+To see non-persistent properties of a service instance:
+  $ diff <(svcprop -s running svc:/network/ssh:default) \
+         <(svcprop svc:/network/ssh:default)
+
+To see what properties are "pending" for an instance, but not yet applied
+to the snapshot:
+  $ diff <(svcprop svc:/network/ssh:default | sort) \
+         <(svcprop -c svc:/network/ssh:default | sort)
+
+
+
+
