@@ -6,26 +6,35 @@
 // TODO-err: Better error types (thiserror)
 // TODO-convenience functions for "non pattern arguments" (one in one out)?
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::string::ToString;
+use thiserror::Error;
+
+
+/// The error type for parsing a bad status code while reading stdout.
+#[derive(Error, Debug)]
+#[error("{0}")]
+pub struct CommandOutputError(String);
 
 trait OutputExt {
-    fn read_stdout(&self) -> Result<String, String>;
+    fn read_stdout(&self) -> Result<String, CommandOutputError>;
 }
 
 impl OutputExt for std::process::Output {
-    fn read_stdout(&self) -> Result<String, String> {
+    fn read_stdout(&self) -> Result<String, CommandOutputError> {
         let stdout = String::from_utf8_lossy(&self.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&self.stderr).trim().to_string();
 
-        if let Some(code) = self.status.code() {
-            if code != 0 {
-                return Err(format!(
-                    "exit code {}\nstdout:\n{}\nstderr:\n{}",
-                    code, stdout, stderr
-                ));
-            }
+        if !self.status.success() {
+            let exit_code = self.status
+                .code()
+                .map(|code| format!("{}", code))
+                .unwrap_or_else(|| "<No exit code>".to_string());
+            return Err(CommandOutputError(format!(
+                "exit code {}\nstdout:\n{}\nstderr:\n{}",
+                exit_code, stdout, stderr
+            )));
         }
         Ok(stdout)
     }
@@ -80,9 +89,25 @@ impl ToString for SMFState {
  *
  */
 
+/// The error code for any operation that fails during a query command.
+#[derive(Error, Debug)]
+pub enum QueryError {
+    /// Failure to parse the output of a query command.
+    #[error("Failed to parse output: {0}")]
+    Parse(String),
+
+    /// Failure to execute a subcommand.
+    #[error("Failed to execute command: {0}")]
+    Command(std::io::Error),
+
+    /// Failure parsing a command's stdout (or non-zero error code).
+    #[error("Failed to parse command output: {0}")]
+    CommandOutput(#[from] CommandOutputError),
+}
+
 /// Describes the status of an SMF service.
 ///
-/// Refer to [SvcQuery] for information acquiring these structures.
+/// Refer to [Query] for information acquiring these structures.
 #[derive(Debug, PartialEq)]
 pub struct SvcStatus {
     /// The FMRI of a service (fault management resource identifier).
@@ -110,54 +135,55 @@ pub struct SvcStatus {
 }
 
 impl FromStr for SvcStatus {
-    type Err = String;
+    type Err = QueryError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        println!("parsing: {}", s);
-
         let mut iter = s.split_whitespace();
 
-        let fmri: String = iter.next().ok_or("Missing FMRI")?.to_string();
-        let contract_id: Option<usize> = iter
-            .next()
-            .map::<Result<_, String>, _>(|s| match s {
-                "-" => Ok(None),
-                _ => Ok(Some(s.parse::<usize>().map_err(|e| e.to_string())?)),
+        let status = || -> Result<SvcStatus, String> {
+            let fmri: String = iter.next().ok_or("Missing FMRI")?.to_string();
+            let contract_id: Option<usize> = iter
+                .next()
+                .map::<Result<_, String>, _>(|s| match s {
+                    "-" => Ok(None),
+                    _ => Ok(Some(s.parse::<usize>().map_err(|e| e.to_string())?)),
+                })
+                .ok_or("Missing ContractID")??;
+            let instance_name: String = iter.next().ok_or("Missing Instance Name")?.to_string();
+            let next_state: Option<SMFState> =
+                SMFState::from_str(iter.next().ok_or("Missing Instance Name")?);
+            let scope_name: String = iter.next().ok_or("Missing Scope Name")?.to_string();
+            let service_name: String = iter.next().ok_or("Missing Service Name")?.to_string();
+            let state: SMFState =
+                SMFState::from_str(iter.next().ok_or("Missing State")?).ok_or("Missing State")?;
+            let service_time: String = iter.next().ok_or("Missing Service Time")?.to_string();
+            let zone: String = iter.next().ok_or("Missing Zone")?.to_string();
+            let description: String = iter
+                .map(|s| s.to_owned())
+                .collect::<Vec<String>>()
+                .join(" ");
+            let description = {
+                if description == "-" || description.is_empty() {
+                    None
+                } else {
+                    Some(description)
+                }
+            };
+            Ok(SvcStatus {
+                fmri,
+                contract_id,
+                instance_name,
+                next_state,
+                scope_name,
+                service_name,
+                state,
+                service_time,
+                zone,
+                description,
             })
-            .ok_or("Missing ContractID")??;
-        let instance_name: String = iter.next().ok_or("Missing Instance Name")?.to_string();
-        let next_state: Option<SMFState> =
-            SMFState::from_str(iter.next().ok_or("Missing Instance Name")?);
-        let scope_name: String = iter.next().ok_or("Missing Scope Name")?.to_string();
-        let service_name: String = iter.next().ok_or("Missing Service Name")?.to_string();
-        let state: SMFState =
-            SMFState::from_str(iter.next().ok_or("Missing State")?).ok_or("Missing State")?;
-        let service_time: String = iter.next().ok_or("Missing Service Time")?.to_string();
-        let zone: String = iter.next().ok_or("Missing Zone")?.to_string();
-        let description: String = iter
-            .map(|s| s.to_owned())
-            .collect::<Vec<String>>()
-            .join(" ");
-        let description = {
-            if description == "-" || description.is_empty() {
-                None
-            } else {
-                Some(description)
-            }
-        };
+        }().map_err(|err| QueryError::Parse(err))?;
 
-        Ok(SvcStatus {
-            fmri,
-            contract_id,
-            instance_name,
-            next_state,
-            scope_name,
-            service_name,
-            state,
-            service_time,
-            zone,
-            description,
-        })
+        Ok(status)
     }
 }
 
@@ -192,8 +218,8 @@ impl SvcColumn {
     }
 }
 
-/// Determines which services are returned from [SvcQuery::get_status]
-pub enum SvcSelection<S = String, I = Vec<String>>
+/// Determines which services are returned from [Query::get_status]
+pub enum QuerySelection<S = String, I = Vec<String>>
 where
     S: AsRef<str>,
     I: IntoIterator<Item = S>,
@@ -211,23 +237,23 @@ where
 /// Queries the underlying system to return [SvcStatus] structures.
 ///
 /// Acts as a wrapper around the underlying 'svcs' command.
-pub struct SvcQuery {
+pub struct Query {
     zone: Option<String>,
 }
 
-impl Default for SvcQuery {
+impl Default for Query {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SvcQuery {
-    pub fn new() -> SvcQuery {
-        SvcQuery { zone: None }
+impl Query {
+    pub fn new() -> Query {
+        Query { zone: None }
     }
 
     /// Requests a query be issued within a specific zone.
-    pub fn zone<S: AsRef<str>>(&mut self, zone: S) -> &mut SvcQuery {
+    pub fn zone<S: AsRef<str>>(&mut self, zone: S) -> &mut Query {
         self.zone.replace(zone.as_ref().into());
         self
     }
@@ -272,19 +298,19 @@ impl SvcQuery {
     fn issue_command(
         &self,
         args: Vec<String>,
-    ) -> Result<String, String> {
+    ) -> Result<String, QueryError> {
         Ok(std::process::Command::new("/usr/bin/svcs")
             .env_clear()
             .args(args)
             .output()
-            .map_err(|err| err.to_string())?
+            .map_err(|err| QueryError::Command(err))?
             .read_stdout()?)
     }
 
     fn issue_status_command(
         &self,
         args: Vec<String>,
-    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
+    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
         Ok(self.issue_command(args)?
             .split('\n')
             .map(|s| s.parse::<SvcStatus>())
@@ -307,31 +333,31 @@ impl SvcQuery {
         );
     }
 
-    /// Syntactic sugar for [SvcQuery::get_status] with a selection of
-    /// [SvcSelection::All].
+    /// Syntactic sugar for [Query::get_status] with a selection of
+    /// [QuerySelection::All].
     ///
     /// See: [The corresponding Rust issue on inferred default
     /// types](https://github.com/rust-lang/rust/issues/27336) for more context.
     pub fn get_status_all(
         &self,
-    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
-        // The `SvcSelection::All` variant of the enum doesn't actually use the
+    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
+        // The `QuerySelection::All` variant of the enum doesn't actually use the
         // type parameters at all, so it doesn't care what types are supplied as
         // parameters.
         //
         // Rather than forcing the client of this library to deal with this
         // quirk, this helper provides reasonable default.
-        self.get_status(SvcSelection::<String, Vec<String>>::All)
+        self.get_status(QuerySelection::<String, Vec<String>>::All)
     }
 
     /// Queries for status information from the corresponding query.
     ///
     /// Returns status information for all services which match the
-    /// [SvcSelection] argument.
+    /// [QuerySelection] argument.
     pub fn get_status<S, I>(
         &self,
-        selection: SvcSelection<S, I>,
-    ) -> Result<impl Iterator<Item = SvcStatus>, String>
+        selection: QuerySelection<S, I>,
+    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError>
     where
         S: AsRef<str>,
         I: IntoIterator<Item = S>,
@@ -342,11 +368,11 @@ impl SvcQuery {
         self.add_columns_to_args(&mut args);
 
         match selection {
-            SvcSelection::All => args.push("-a".to_string()),
-            SvcSelection::ByRestarter(restarter) => {
+            QuerySelection::All => args.push("-a".to_string()),
+            QuerySelection::ByRestarter(restarter) => {
                 args.push(format!("-R {}", restarter.as_ref()));
             },
-            SvcSelection::ByPattern(names) => self.add_patterns(&mut args, names),
+            QuerySelection::ByPattern(names) => self.add_patterns(&mut args, names),
         }
 
         self.issue_status_command(args)
@@ -357,7 +383,7 @@ impl SvcQuery {
         &self,
         mut args: Vec<String>,
         patterns: Vec<S>,
-    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
+    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
         self.add_zone_to_args(&mut args);
         self.add_columns_to_args(&mut args);
 
@@ -371,10 +397,10 @@ impl SvcQuery {
     /// instances depend.
     ///
     /// ```no_run
-    /// use smf::SvcQuery;
+    /// use smf::Query;
     ///
     /// fn main() {
-    ///   let service_statuses = SvcQuery::new()
+    ///   let service_statuses = Query::new()
     ///       .get_dependencies_of(vec!["svcs:/system/filesystem/minimal"])
     ///       .unwrap();
     ///   // `service_statuses` includes services which boot before the
@@ -384,7 +410,7 @@ impl SvcQuery {
     pub fn get_dependencies_of<S: AsRef<str>>(
         &self,
         patterns: Vec<S>,
-    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
+    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
         let args = vec!["-d".to_string()];
         self.get_dep_impl(args, patterns)
     }
@@ -393,10 +419,10 @@ impl SvcQuery {
     /// provided instances.
     ///
     /// ```no_run
-    /// use smf::SvcQuery;
+    /// use smf::Query;
     ///
     /// fn main() {
-    ///   let service_statuses = SvcQuery::new()
+    ///   let service_statuses = Query::new()
     ///       .get_dependents_of(vec!["svcs:/system/filesystem/minimal"])
     ///       .unwrap();
     ///   // `service_statuses` includes services which need a minimal
@@ -406,7 +432,7 @@ impl SvcQuery {
     pub fn get_dependents_of<S: AsRef<str>>(
         &self,
         patterns: Vec<S>,
-    ) -> Result<impl Iterator<Item = SvcStatus>, String> {
+    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
         let args = vec!["-D".to_string()];
         self.get_dep_impl(args, patterns)
     }
@@ -416,7 +442,7 @@ impl SvcQuery {
     pub fn get_log_files<S: AsRef<str>>(
         &self,
         patterns: Vec<S>
-    ) -> Result<impl Iterator<Item = PathBuf>, String> {
+    ) -> Result<impl Iterator<Item = PathBuf>, QueryError> {
         let mut args = vec!["-L".to_string()];
         self.add_zone_to_args(&mut args);
         self.add_patterns(&mut args, &patterns);
@@ -435,11 +461,182 @@ impl SvcQuery {
  *
  */
 
-// struct SvcConfig {}
+/// The error code for any operation that fails during a config command.
+#[derive(Error, Debug)]
+pub enum ConfigError {
+    /// Failure to execute a subcommand.
+    #[error("Failed to execute command: {0}")]
+    Command(std::io::Error),
 
-// TODO:
-// "-s FMRI" operates on FMRI. BEFORE subcommands. Optional.
+    /// Failure parsing a command's stdout (or non-zero error code).
+    #[error("Failed to parse command output: {0}")]
+    CommandOutput(#[from] CommandOutputError),
+}
 
+/// Provides an API to manipulate the configuration files for SMF services.
+///
+/// Acts as a wrapper around the underlying 'svcfg' command.
+pub struct Config {}
+
+impl Config {
+    /// Builds a [ConfigExport] object.
+    ///
+    /// ```no_run
+    /// let manifest = smf::Config::export()
+    ///     .archive()
+    ///     .run("my-service")
+    ///     .unwrap();
+    /// ```
+    pub fn export() -> ConfigExport {
+        ConfigExport::new()
+    }
+
+    /// Builds a [ConfigImport] object.
+    ///
+    /// ```no_run
+    /// smf::Config::import()
+    ///     .run("/path/to/my/manifest.xml")
+    ///     .unwrap();
+    /// ```
+    pub fn import() -> ConfigImport {
+        ConfigImport::new()
+    }
+
+    /// Builds a [ConfigDelete] object.
+    ///
+    /// ```no_run
+    /// smf::Config::delete()
+    ///     .force()
+    ///     .run("my-service")
+    ///     .unwrap();
+    /// ```
+    pub fn delete() -> ConfigDelete {
+        ConfigDelete::new()
+    }
+}
+
+trait ConfigSubcommand {
+    fn name(&self) -> &str;
+    fn add_args(&self, args: &mut Vec<String>);
+}
+
+/// Created by [Config::export], represents a command to export
+/// a service configuration.
+pub struct ConfigExport {
+    archive: bool,
+}
+
+impl ConfigExport {
+    pub fn new() -> Self {
+        ConfigExport {
+            archive: false,
+        }
+    }
+
+    /// Archives all values, including protected information.
+    pub fn archive(&mut self) -> &mut Self {
+        self.archive = true;
+        self
+    }
+
+    /// Runs the export command, returning the manifest output as a string.
+    pub fn run<S: AsRef<str>>(&mut self, fmri: S) -> Result<String, ConfigError> {
+        let mut args = vec![];
+        args.push("export".to_string());
+        if self.archive {
+            args.push("-a".to_string());
+        }
+        args.push(fmri.as_ref().into());
+
+        Ok(std::process::Command::new("/usr/sbin/svccfg")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(|err| ConfigError::Command(err))?
+            .read_stdout()?)
+    }
+}
+
+/// Created by [Config::import], represents a command to import
+/// a service configuration.
+pub struct ConfigImport {
+    validate: bool,
+}
+
+impl ConfigImport {
+    pub fn new() -> Self {
+        ConfigImport {
+            validate: true,
+        }
+    }
+
+    /// Requests that manifest data should not be validated before being
+    /// imported. By default, this validation is enabled.
+    pub fn no_validate(&mut self) -> &mut Self {
+        self.validate = false;
+        self
+    }
+
+    /// Runs the import command.
+    pub fn run<P: AsRef<Path>>(&mut self, path: P) -> Result<(), ConfigError> {
+        let mut args = vec![];
+        args.push("import".to_string());
+        if self.validate {
+            args.push("-V".to_string());
+        }
+        args.push(path.as_ref().to_string_lossy().to_string());
+
+        std::process::Command::new("/usr/sbin/svccfg")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(|err| ConfigError::Command(err))?
+            .read_stdout()
+            .map(|_| ())
+            .map_err(|err| err.into())
+    }
+}
+
+/// Created by [Config::delete], requests that a configuration be deleted.
+pub struct ConfigDelete {
+    force: bool,
+}
+
+impl ConfigDelete {
+    pub fn new() -> Self {
+        ConfigDelete {
+            force: false,
+        }
+    }
+
+    /// Forcefully deletes the entity.
+    ///
+    /// Instances which are in the "online" or "degraded" state will
+    /// not be deleted successfully unless this option is enabled.
+    pub fn force(&mut self) -> &mut Self {
+        self.force = true;
+        self
+    }
+
+    /// Runs the deletion command.
+    pub fn run<S: AsRef<str>>(&mut self, fmri: S) -> Result<(), ConfigError> {
+        let mut args = vec![];
+        args.push("delete".to_string());
+        if self.force {
+            args.push("-f".to_string());
+        }
+        args.push(fmri.as_ref().into());
+
+        std::process::Command::new("/usr/sbin/svccfg")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(|err| ConfigError::Command(err))?
+            .read_stdout()
+            .map(|_| ())
+            .map_err(|err| err.into())
+    }
+}
 
 /*
  *
@@ -447,8 +644,20 @@ impl SvcQuery {
  *
  */
 
-/// Determines which services are returned from [SvcAdm] operations.
-pub enum SvcAdmSelection<S, I>
+/// The error code for any operation that fails during an adm command.
+#[derive(Error, Debug)]
+pub enum AdmError {
+    /// Failure to execute a subcommand.
+    #[error("Failed to execute command: {0}")]
+    Command(std::io::Error),
+
+    /// Failure parsing a command's stdout (or non-zero error code).
+    #[error("Failed to parse command output: {0}")]
+    CommandOutput(#[from] CommandOutputError),
+}
+
+/// Determines which services are returned from [Adm] operations.
+pub enum AdmSelection<S, I>
 where
     S: AsRef<str>,
     I: IntoIterator<Item = S>,
@@ -463,20 +672,20 @@ where
 /// Provides tools for changing the state of SMF services.
 ///
 /// Acts as a wrapper around the underlying 'svcadm' command.
-pub struct SvcAdm {
+pub struct Adm {
     zone: Option<String>,
 }
 
-impl Default for SvcAdm {
+impl Default for Adm {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SvcAdm {
+impl Adm {
     /// Construct a new builder object.
-    pub fn new() -> SvcAdm {
-        SvcAdm { zone: None }
+    pub fn new() -> Adm {
+        Adm { zone: None }
     }
 
     fn add_zone_to_args(&self, args: &mut Vec<String>) {
@@ -488,116 +697,108 @@ impl SvcAdm {
     }
 
     /// Requests a command be issued within a specific zone.
-    pub fn zone<S: AsRef<str>>(&mut self, zone: S) -> &mut SvcAdm {
+    pub fn zone<S: AsRef<str>>(&mut self, zone: S) -> &mut Adm {
         self.zone.replace(zone.as_ref().into());
         self
     }
 
-    fn run(args: Vec<String>) -> Result<(), String> {
+    fn run(args: Vec<String>) -> Result<(), AdmError> {
         std::process::Command::new("/usr/sbin/svcadm")
             .env_clear()
             .args(args)
             .output()
-            .map_err(|err| err.to_string())?
+            .map_err(|err| AdmError::Command(err))?
             .read_stdout()?;
         Ok(())
     }
 
-    /// Builds a [SvcAdmEnable] object.
+    // TODO: No need to consume self
+
+    /// Builds a [AdmEnable] object.
     ///
     /// ```no_run
-    /// use smf::{SvcAdm, SvcAdmSelection, SvcAdmSubcommand};
+    /// use smf::{Adm, AdmSelection};
     ///
-    /// SvcAdm::new()
+    /// Adm::new()
     ///     .enable()
     ///     .synchronous()
-    ///     .run(SvcAdmSelection::ByPattern(&["service"]))
+    ///     .run(AdmSelection::ByPattern(&["service"]))
     ///     .unwrap();
     /// ```
-    pub fn enable(self) -> SvcAdmEnable {
-        SvcAdmEnable::new(self)
+    pub fn enable(&self) -> AdmEnable {
+        AdmEnable::new(self)
     }
-    /// Builds a [SvcAdmDisable] object.
-    pub fn disable(self) -> SvcAdmDisable {
-        SvcAdmDisable::new(self)
+    /// Builds a [AdmDisable] object.
+    pub fn disable(&self) -> AdmDisable {
+        AdmDisable::new(self)
     }
-    /// Builds a [SvcAdmRestart] object.
-    pub fn restart(self) -> SvcAdmRestart {
-        SvcAdmRestart::new(self)
+    /// Builds a [AdmRestart] object.
+    pub fn restart(&self) -> AdmRestart {
+        AdmRestart::new(self)
     }
-    /// Builds a [SvcAdmRefresh] object.
-    pub fn refresh(self) -> SvcAdmRefresh {
-        SvcAdmRefresh::new(self)
+    /// Builds a [AdmRefresh] object.
+    pub fn refresh(&self) -> AdmRefresh {
+        AdmRefresh::new(self)
     }
-    /// Builds a [SvcAdmClear] object.
-    pub fn clear(self) -> SvcAdmClear {
-        SvcAdmClear::new(self)
+    /// Builds a [AdmClear] object.
+    pub fn clear(&self) -> AdmClear {
+        AdmClear::new(self)
     }
 
     // TODO: Mark, milestone
 }
 
-// Workaround for E0445.
-//
-// This trait should not be exposed externally.
-mod admimpl {
-    /// Private trait to help implement a subcommand.
-    pub trait SvcAdmSubcommandImpl {
-        /// Returns the base SvcAdm object.
-        fn adm(&self) -> &super::SvcAdm;
+/// Private trait to help implement a subcommand.
+trait AdmSubcommand {
+    /// Returns the base Adm object.
+    fn adm(&self) -> &super::Adm;
 
-        /// Returns the name of the svcadm subcommand.
-        fn command_name(&self) -> &str;
+    /// Returns the name of the Adm subcommand.
+    fn command_name(&self) -> &str;
 
-        /// Adds subcommand specific arguments.
-        fn add_to_args(&self, args: &mut Vec<String>);
-    }
+    /// Adds subcommand specific arguments.
+    fn add_to_args(&self, args: &mut Vec<String>);
 }
 
-/// Shared mechanism of running all subcommands created by [SvcAdm].
-pub trait SvcAdmSubcommand : admimpl::SvcAdmSubcommandImpl {
-    /// Executes the provided the command.
-    fn run<S, I>(&mut self, selection: SvcAdmSelection<S, I>) -> Result<(), String>
-    where
-        S: AsRef<str>,
-        I: IntoIterator<Item = S>,
-    {
-        let mut args = vec![];
+/// Shared mechanism of running all subcommands created by [Adm].
+fn run_adm_subcommand<C, S, I>(subcommand: &C,
+                               selection: AdmSelection<S, I>) -> Result<(), AdmError>
+where
+    C: AdmSubcommand,
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+{
+    let mut args = vec![];
 
-        self.adm().add_zone_to_args(&mut args);
+    subcommand.adm().add_zone_to_args(&mut args);
 
-        match selection {
-            SvcAdmSelection::ByState(state) => {
-                args.push("-S".to_string());
-                args.push(state.to_string());
-                args.push(self.command_name().to_string());
-                self.add_to_args(&mut args);
-            },
-            SvcAdmSelection::ByPattern(pattern) => {
-                args.push(self.command_name().to_string());
-                self.add_to_args(&mut args);
-                args.extend(pattern.into_iter().map(|s| s.as_ref().to_string()));
-            },
-        }
-        SvcAdm::run(args)
+    match selection {
+        AdmSelection::ByState(state) => {
+            args.push("-S".to_string());
+            args.push(state.to_string());
+            args.push(subcommand.command_name().to_string());
+            subcommand.add_to_args(&mut args);
+        },
+        AdmSelection::ByPattern(pattern) => {
+            args.push(subcommand.command_name().to_string());
+            subcommand.add_to_args(&mut args);
+            args.extend(pattern.into_iter().map(|s| s.as_ref().to_string()));
+        },
     }
+    Adm::run(args)
 }
-
-/// Implements a subcomand
-impl <T: admimpl::SvcAdmSubcommandImpl> SvcAdmSubcommand for T {}
 
 /// Enables the service instance(s). The assigned restarter
 /// will attempt to bring the service to the online state.
-/// Use to [SvcAdmSubcommand::run] to invoke.
-pub struct SvcAdmEnable {
-    adm: SvcAdm,
+pub struct AdmEnable<'a> {
+    adm: &'a Adm,
     recursive: bool,
     synchronous: bool,
     temporary: bool,
 }
 
-impl admimpl::SvcAdmSubcommandImpl for SvcAdmEnable {
-    fn adm(&self) -> &SvcAdm { &self.adm }
+impl<'a> AdmSubcommand for AdmEnable<'a> {
+    fn adm(&self) -> &Adm { &self.adm }
     fn command_name(&self) -> &str { "enable" }
     fn add_to_args(&self, args: &mut Vec<String>) {
         if self.recursive { args.push("-r".to_string()) }
@@ -606,9 +807,9 @@ impl admimpl::SvcAdmSubcommandImpl for SvcAdmEnable {
     }
 }
 
-impl SvcAdmEnable {
-    fn new(adm: SvcAdm) -> Self {
-        SvcAdmEnable {
+impl<'a> AdmEnable<'a> {
+    fn new(adm: &'a Adm) -> Self {
+        AdmEnable {
             adm,
             recursive: false,
             synchronous: false,
@@ -633,20 +834,28 @@ impl SvcAdmEnable {
         self.temporary = true;
         self
     }
+
+    /// Runs the command.
+    pub fn run<S, I>(&mut self, selection: AdmSelection<S, I>) -> Result<(), AdmError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        run_adm_subcommand(self, selection)
+    }
 }
 
 /// Disables the service instance(s). The assigned restarter
 /// will attempt to bring the service to the disabled state.
-/// Use to [SvcAdmSubcommand::run] to invoke.
-pub struct SvcAdmDisable {
-    adm: SvcAdm,
+pub struct AdmDisable<'a> {
+    adm: &'a Adm,
     comment: Option<String>,
     synchronous: bool,
     temporary: bool,
 }
 
-impl admimpl::SvcAdmSubcommandImpl for SvcAdmDisable {
-    fn adm(&self) -> &SvcAdm { &self.adm }
+impl<'a> AdmSubcommand for AdmDisable<'a> {
+    fn adm(&self) -> &Adm { &self.adm }
     fn command_name(&self) -> &str { "disable" }
     fn add_to_args(&self, args: &mut Vec<String>) {
         if let Some(ref comment) = self.comment {
@@ -658,9 +867,9 @@ impl admimpl::SvcAdmSubcommandImpl for SvcAdmDisable {
     }
 }
 
-impl SvcAdmDisable {
-    fn new(adm: SvcAdm) -> Self {
-        SvcAdmDisable {
+impl<'a> AdmDisable<'a> {
+    fn new(adm: &'a Adm) -> Self {
+        AdmDisable {
             adm,
             comment: None,
             synchronous: false,
@@ -684,25 +893,33 @@ impl SvcAdmDisable {
         self.temporary = true;
         self
     }
+
+    /// Runs the command.
+    pub fn run<S, I>(&mut self, selection: AdmSelection<S, I>) -> Result<(), AdmError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        run_adm_subcommand(self, selection)
+    }
 }
 
 /// Requests that the provided service instances are restarted.
-/// Use to [SvcAdmSubcommand::run] to invoke.
-pub struct SvcAdmRestart {
-    adm: SvcAdm,
+pub struct AdmRestart<'a> {
+    adm: &'a Adm,
     abort: bool
 }
 
-impl admimpl::SvcAdmSubcommandImpl for SvcAdmRestart {
-    fn adm(&self) -> &SvcAdm { &self.adm }
+impl<'a> AdmSubcommand for AdmRestart<'a> {
+    fn adm(&self) -> &Adm { &self.adm }
     fn command_name(&self) -> &str { "restart" }
     fn add_to_args(&self, args: &mut Vec<String>) {
         if self.abort { args.push("-d".to_string()) }
     }
 }
 
-impl SvcAdmRestart {
-    fn new(adm: SvcAdm) -> Self {
+impl<'a> AdmRestart<'a> {
+    fn new(adm: &'a Adm) -> Self {
         Self {
             adm,
             abort: false,
@@ -714,47 +931,72 @@ impl SvcAdmRestart {
         self.abort = true;
         self
     }
+
+    /// Runs the command.
+    pub fn run<S, I>(&mut self, selection: AdmSelection<S, I>) -> Result<(), AdmError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        run_adm_subcommand(self, selection)
+    }
 }
 
 /// Requests that the restarter update the configuration snapshot of all
 /// requested services, replacing it with values from the current configuration.
-/// Use to [SvcAdmSubcommand::run] to invoke.
-pub struct SvcAdmRefresh {
-    adm: SvcAdm,
+pub struct AdmRefresh<'a> {
+    adm: &'a Adm,
 }
 
-impl admimpl::SvcAdmSubcommandImpl for SvcAdmRefresh {
-    fn adm(&self) -> &SvcAdm { &self.adm }
+impl<'a> AdmSubcommand for AdmRefresh<'a> {
+    fn adm(&self) -> &Adm { &self.adm }
     fn command_name(&self) -> &str { "refresh" }
     fn add_to_args(&self, _args: &mut Vec<String>) {}
 }
 
-impl SvcAdmRefresh {
-    fn new(adm: SvcAdm) -> Self {
+impl<'a> AdmRefresh<'a> {
+    fn new(adm: &'a Adm) -> Self {
         Self {
             adm,
         }
+    }
+
+    /// Runs the command.
+    pub fn run<S, I>(&mut self, selection: AdmSelection<S, I>) -> Result<(), AdmError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        run_adm_subcommand(self, selection)
     }
 }
 
 /// Requests that all provided services, if they are in the `maintenance`
 /// state, are repaired.
-/// Use to [SvcAdmSubcommand::run] to invoke.
-pub struct SvcAdmClear {
-    adm: SvcAdm,
+pub struct AdmClear<'a> {
+    adm: &'a Adm,
 }
 
-impl admimpl::SvcAdmSubcommandImpl for SvcAdmClear {
-    fn adm(&self) -> &SvcAdm { &self.adm }
+impl<'a> AdmSubcommand for AdmClear<'a> {
+    fn adm(&self) -> &Adm { &self.adm }
     fn command_name(&self) -> &str { "clear" }
     fn add_to_args(&self, _args: &mut Vec<String>) {}
 }
 
-impl SvcAdmClear {
-    fn new(adm: SvcAdm) -> Self {
+impl<'a> AdmClear<'a> {
+    fn new(adm: &'a Adm) -> Self {
         Self {
             adm,
         }
+    }
+
+    /// Runs the command.
+    pub fn run<S, I>(&mut self, selection: AdmSelection<S, I>) -> Result<(), AdmError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        run_adm_subcommand(self, selection)
     }
 }
 
@@ -764,27 +1006,123 @@ impl SvcAdmClear {
  *
  */
 
-/*
-fn instance_state(fmri: &str) -> Result<(SMFState, Option<SMFState>), String> {
-    let out = std::process::Command::new("/usr/bin/svcs")
-        .env_clear()
-        .arg("-Ho").arg("sta,nsta")
-        .arg(fmri)
-        .output()
-        .map_err(|err| err.to_string())?;
-    if !out.status.success() {
-        return Err(format!("svcs failed"));
-    }
-    let val = String::from_utf8(out.stdout).map_err(|err| err.to_string())?;
-    let lines: Vec<_> = val.lines().collect();
-    if lines.len() != 1 {
-        return Err(format!("unexpected output for {}: {:?}", fmri, lines));
-    }
-    let terms: Vec<&str> = lines[0].split_whitespace().collect();
-    Ok((SMFState::from_str(&terms[0]).unwrap(),
-        SMFState::from_str(&terms[1])))
+struct Properties {
+    zone: Option<String>,
 }
-*/
+
+impl Default for Properties {
+    fn default() -> Self {
+        Properties::new()
+    }
+}
+
+impl Properties {
+    fn new() -> Self {
+        Properties {
+            zone: None,
+        }
+    }
+
+    /// Requests a command be issued within a specific zone.
+    pub fn zone<S: AsRef<str>>(&mut self, zone: S) -> &mut Properties {
+        self.zone.replace(zone.as_ref().into());
+        self
+    }
+
+    // TODO: fqtv args here
+
+    pub fn list(&self) -> PropertiesList {
+        PropertiesList::new()
+    }
+
+    pub fn wait(&self) -> PropertiesWait {
+        PropertiesWait {}
+    }
+}
+
+/// The selection of properties for a service or instance.
+///
+/// Services always return directly attached properties; these
+/// options only apply to service instances.
+pub enum PropertyClass {
+    /// Effective properties, relative to an optional snapshot.
+    /// For instances: The composed view of the snapshot with all
+    /// non-persistent properties.
+    ///
+    /// This is equivalent to `svcprop` with no arguments,
+    /// or `svcprop -s <snapshot>` if a string is supplied.
+    Effective(Option<String>),
+    /// Directly attached properties, with no composition nor snapshots.
+    ///
+    /// This is equivalent to `svcprop -C`.
+    DirectlyAttachedUncomposed,
+    /// Directly attached properties, composed with the directly attached
+    /// properties of the service.
+    ///
+    /// This is equivalent to `svcprop -c`.
+    DirectlyAttachedComposed
+}
+
+struct PropertiesList {
+    attachment: PropertyClass,
+    props: Vec<String>,
+}
+
+impl PropertiesList {
+    fn new() -> Self {
+        PropertiesList {
+            attachment: PropertyClass::Effective(None),
+            props: vec![],
+        }
+    }
+
+    /// Optionally requests properties with a particular view.
+    /// Refer to [PropertyClass] for a more exhaustive explanation.
+    pub fn attachment(&mut self, attachment: PropertyClass) -> &mut Self {
+        self.attachment = attachment;
+        self
+    }
+
+    /// Requests a property or property group.
+    ///
+    /// Invoking this method multiple times is additive.
+    pub fn property<S: AsRef<str>>(&mut self, prop: S) -> &mut Self {
+        self.props.push(prop.as_ref().into());
+        self
+    }
+
+}
+
+struct PropertiesWait {}
+
+// -p [name]    : Select all properties specified by name or pg/prop
+// -p [pg/prop]
+//
+// -z [zone]    : Select zone
+//
+// -f: Multi-property output format + Full FMRIs as designators
+// -t: Multi-property output format
+// -q: No output (XXX Ignore?)
+//
+//
+// svcprop [-fqtv] [-C | -c | -s snapshot] [-z zone] [-p name]... {FMRI | pattern}...
+// svcprop -w [-fqtv] [-z zone] [-p name] {FMRI | pattern}...
+//
+// TODO: What is composition?
+//
+// Effective properties of SERVICE:
+//      Directly attached properties.
+// Effective properties of SERVICE INSTANCE:
+//      Union of...
+//          ... properties in the composed view of running snapshot
+//          ... properties in nonpersistent property groups in the composed view
+//
+// <no option>: Use effective properties.
+// -C: Use directly attached props, without composition
+// -c: For instances use the composed view of directly attached properties
+// -s name: Use the composed view of the name snapshot for service instances
+//
+// -w Wait for the property to change before printing. IMPLIES -C.
 
 #[cfg(test)]
 mod tests {
@@ -819,7 +1157,7 @@ mod tests {
         let fmri = format!("svc:/{}:{}", svc, inst);
         let pattern = [&fmri];
 
-        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(&pattern));
+        let query = Query::new().get_status(QuerySelection::ByPattern(&pattern));
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
@@ -839,7 +1177,7 @@ mod tests {
         let svc_usr = "system/filesystem/usr";
         let pattern = [svc_usr, svc_root];
 
-        let query = SvcQuery::new().get_status(SvcSelection::ByPattern(&pattern));
+        let query = Query::new().get_status(QuerySelection::ByPattern(&pattern));
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
@@ -855,7 +1193,7 @@ mod tests {
 
     #[test]
     fn test_svcs_get_status_all() {
-        let query = SvcQuery::new().get_status_all();
+        let query = Query::new().get_status_all();
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
@@ -864,7 +1202,7 @@ mod tests {
 
     #[test]
     fn test_svcs_get_status_all_global_zone() {
-        let query = SvcQuery::new().zone("global").get_status_all();
+        let query = Query::new().zone("global").get_status_all();
         assert!(
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
