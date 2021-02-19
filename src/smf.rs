@@ -2,15 +2,12 @@
 
 //! APIs for interacting with the Solaris service management facility.
 
-// TODO-docs: DOCS ON EVERYTHING
-// TODO-err: Better error types (thiserror)
-// TODO-convenience functions for "non pattern arguments" (one in one out)?
+#![deny(missing_docs)]
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::string::ToString;
 use thiserror::Error;
-
 
 /// The error type for parsing a bad status code while reading stdout.
 #[derive(Error, Debug)]
@@ -45,12 +42,24 @@ impl OutputExt for std::process::Output {
 /// For more information, refer to the "States" section of the smf man page.
 #[derive(Debug, PartialEq)]
 pub enum SMFState {
+    /// The instance is disabled, must be explicitly enabled
+    /// to later turn on.
     Disabled,
+    /// The instance is enabled and running (or available to run).
+    /// However, it is operating in limited capacity.
     Degraded,
+    /// The instance is enabled, but not running. Administrative
+    /// action (via the [AdmClear] / `svcadm clear` command) is
+    /// required to restore the instance to an online state.
     Maintenance,
+    /// The instance is enabled, but not yet running or able to run.
     Offline,
+    /// The instance is enabled and running.
     Online,
+    /// The instants represents a legacy service not managed by SMF.
     Legacy,
+    /// The initial state for all service instances. The instance
+    /// will be moved to another state by the restarter.
     Uninitialized,
 }
 
@@ -100,7 +109,7 @@ pub enum QueryError {
     #[error("Failed to execute command: {0}")]
     Command(std::io::Error),
 
-    /// Failure parsing a command's stdout (or non-zero error code).
+    /// Failure reading a command's stdout (or non-zero error code).
     #[error("Failed to parse command output: {0}")]
     CommandOutput(#[from] CommandOutputError),
 }
@@ -141,24 +150,24 @@ impl FromStr for SvcStatus {
         let mut iter = s.split_whitespace();
 
         let status = || -> Result<SvcStatus, String> {
-            let fmri: String = iter.next().ok_or("Missing FMRI")?.to_string();
-            let contract_id: Option<usize> = iter
+            let fmri = iter.next().ok_or("Missing FMRI")?.to_string();
+            let contract_id = iter
                 .next()
                 .map::<Result<_, String>, _>(|s| match s {
                     "-" => Ok(None),
                     _ => Ok(Some(s.parse::<usize>().map_err(|e| e.to_string())?)),
                 })
                 .ok_or("Missing ContractID")??;
-            let instance_name: String = iter.next().ok_or("Missing Instance Name")?.to_string();
-            let next_state: Option<SMFState> =
+            let instance_name = iter.next().ok_or("Missing Instance Name")?.to_string();
+            let next_state =
                 SMFState::from_str(iter.next().ok_or("Missing Instance Name")?);
-            let scope_name: String = iter.next().ok_or("Missing Scope Name")?.to_string();
-            let service_name: String = iter.next().ok_or("Missing Service Name")?.to_string();
-            let state: SMFState =
+            let scope_name = iter.next().ok_or("Missing Scope Name")?.to_string();
+            let service_name = iter.next().ok_or("Missing Service Name")?.to_string();
+            let state =
                 SMFState::from_str(iter.next().ok_or("Missing State")?).ok_or("Missing State")?;
-            let service_time: String = iter.next().ok_or("Missing Service Time")?.to_string();
-            let zone: String = iter.next().ok_or("Missing Zone")?.to_string();
-            let description: String = iter
+            let service_time = iter.next().ok_or("Missing Service Time")?.to_string();
+            let zone = iter.next().ok_or("Missing Zone")?.to_string();
+            let description = iter
                 .map(|s| s.to_owned())
                 .collect::<Vec<String>>()
                 .join(" ");
@@ -248,6 +257,7 @@ impl Default for Query {
 }
 
 impl Query {
+    /// Creates a new query object.
     pub fn new() -> Query {
         Query { zone: None }
     }
@@ -288,11 +298,6 @@ impl Query {
             .join(","),
         );
     }
-
-    // XXX three commands below don't really act on 'self', they sorta
-    // act on the args?
-    //
-    // TODO: Check for overlap with other commands
 
     // Issues command, returns stdout.
     fn issue_command(
@@ -337,7 +342,9 @@ impl Query {
     /// [QuerySelection::All].
     ///
     /// See: [The corresponding Rust issue on inferred default
-    /// types](https://github.com/rust-lang/rust/issues/27336) for more context.
+    /// types](https://github.com/rust-lang/rust/issues/27336) for more context
+    /// on why this method exists - it is more ergonomic than invoking
+    /// [Self::get_status] with [QuerySelection::All] directly.
     pub fn get_status_all(
         &self,
     ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
@@ -379,16 +386,20 @@ impl Query {
     }
 
     // Shared implementation for getting dependencies and dependents.
-    fn get_dep_impl<S: AsRef<str>>(
+    fn get_dep_impl<S, I>(
         &self,
         mut args: Vec<String>,
-        patterns: Vec<S>,
-    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
+        patterns: I,
+    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
         self.add_zone_to_args(&mut args);
         self.add_columns_to_args(&mut args);
 
         // XXX patterns need cleaning, same in other getters
-        self.add_patterns(&mut args, &patterns);
+        self.add_patterns(&mut args, patterns);
 
         self.issue_status_command(args)
     }
@@ -397,20 +408,20 @@ impl Query {
     /// instances depend.
     ///
     /// ```no_run
-    /// use smf::Query;
-    ///
-    /// fn main() {
-    ///   let service_statuses = Query::new()
-    ///       .get_dependencies_of(vec!["svcs:/system/filesystem/minimal"])
-    ///       .unwrap();
-    ///   // `service_statuses` includes services which boot before the
-    ///   // minimal filesystem.
-    /// }
+    /// let service_statuses = smf::Query::new()
+    ///     .get_dependencies_of(&["svcs:/system/filesystem/minimal"])
+    ///     .unwrap();
+    /// // `service_statuses` includes services which boot before the
+    /// // minimal filesystem.
     /// ```
-    pub fn get_dependencies_of<S: AsRef<str>>(
+    pub fn get_dependencies_of<S, I>(
         &self,
-        patterns: Vec<S>,
-    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
+        patterns: I,
+    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
         let args = vec!["-d".to_string()];
         self.get_dep_impl(args, patterns)
     }
@@ -419,33 +430,43 @@ impl Query {
     /// provided instances.
     ///
     /// ```no_run
-    /// use smf::Query;
-    ///
-    /// fn main() {
-    ///   let service_statuses = Query::new()
-    ///       .get_dependents_of(vec!["svcs:/system/filesystem/minimal"])
-    ///       .unwrap();
-    ///   // `service_statuses` includes services which need a minimal
-    ///   // filesystem.
-    /// }
+    /// let service_statuses = smf::Query::new()
+    ///     .get_dependents_of(&["svcs:/system/filesystem/minimal"])
+    ///     .unwrap();
+    /// // `service_statuses` includes services which need a minimal
+    /// // filesystem.
     /// ```
-    pub fn get_dependents_of<S: AsRef<str>>(
+    pub fn get_dependents_of<S, I>(
         &self,
-        patterns: Vec<S>,
-    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
+        patterns: I,
+    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
         let args = vec!["-D".to_string()];
         self.get_dep_impl(args, patterns)
     }
 
     /// Acquires the log files for services which match the provided FMRIs
     /// or glob patterns.
-    pub fn get_log_files<S: AsRef<str>>(
+    ///
+    /// ```no_run
+    /// let log_file = smf::Query::new()
+    ///     .get_log_files(vec!["svc:/system/filesystem/minimal"]).unwrap()
+    ///     .next().unwrap();
+    /// ```
+    pub fn get_log_files<S, I>(
         &self,
-        patterns: Vec<S>
-    ) -> Result<impl Iterator<Item = PathBuf>, QueryError> {
+        patterns: I
+    ) -> Result<impl Iterator<Item = PathBuf>, QueryError>
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
         let mut args = vec!["-L".to_string()];
         self.add_zone_to_args(&mut args);
-        self.add_patterns(&mut args, &patterns);
+        self.add_patterns(&mut args, patterns);
         Ok(self.issue_command(args)?
             .split('\n')
             .map(|s| s.parse::<PathBuf>())
@@ -468,14 +489,14 @@ pub enum ConfigError {
     #[error("Failed to execute command: {0}")]
     Command(std::io::Error),
 
-    /// Failure parsing a command's stdout (or non-zero error code).
+    /// Failure reading a command's stdout (or non-zero error code).
     #[error("Failed to parse command output: {0}")]
     CommandOutput(#[from] CommandOutputError),
 }
 
 /// Provides an API to manipulate the configuration files for SMF services.
 ///
-/// Acts as a wrapper around the underlying 'svcfg' command.
+/// Acts as a wrapper around the underlying `svcfg` command.
 pub struct Config {}
 
 impl Config {
@@ -527,7 +548,7 @@ pub struct ConfigExport {
 }
 
 impl ConfigExport {
-    pub fn new() -> Self {
+    fn new() -> Self {
         ConfigExport {
             archive: false,
         }
@@ -564,7 +585,7 @@ pub struct ConfigImport {
 }
 
 impl ConfigImport {
-    pub fn new() -> Self {
+    fn new() -> Self {
         ConfigImport {
             validate: true,
         }
@@ -603,7 +624,7 @@ pub struct ConfigDelete {
 }
 
 impl ConfigDelete {
-    pub fn new() -> Self {
+    fn new() -> Self {
         ConfigDelete {
             force: false,
         }
@@ -651,7 +672,7 @@ pub enum AdmError {
     #[error("Failed to execute command: {0}")]
     Command(std::io::Error),
 
-    /// Failure parsing a command's stdout (or non-zero error code).
+    /// Failure reading a command's stdout (or non-zero error code).
     #[error("Failed to parse command output: {0}")]
     CommandOutput(#[from] CommandOutputError),
 }
@@ -712,8 +733,6 @@ impl Adm {
         Ok(())
     }
 
-    // TODO: No need to consume self
-
     /// Builds a [AdmEnable] object.
     ///
     /// ```no_run
@@ -728,19 +747,61 @@ impl Adm {
     pub fn enable(&self) -> AdmEnable {
         AdmEnable::new(self)
     }
+
     /// Builds a [AdmDisable] object.
+    ///
+    /// ```no_run
+    /// use smf::{Adm, AdmSelection};
+    ///
+    /// Adm::new()
+    ///     .disable()
+    ///     .synchronous()
+    ///     .run(AdmSelection::ByPattern(&["service"]))
+    ///     .unwrap();
+    /// ```
     pub fn disable(&self) -> AdmDisable {
         AdmDisable::new(self)
     }
+
     /// Builds a [AdmRestart] object.
+    ///
+    /// ```no_run
+    /// use smf::{Adm, AdmSelection};
+    ///
+    /// Adm::new()
+    ///     .restart()
+    ///     .abort()
+    ///     .run(AdmSelection::ByPattern(&["service"]))
+    ///     .unwrap();
+    /// ```
     pub fn restart(&self) -> AdmRestart {
         AdmRestart::new(self)
     }
+
     /// Builds a [AdmRefresh] object.
+    ///
+    /// ```no_run
+    /// use smf::{Adm, AdmSelection};
+    ///
+    /// Adm::new()
+    ///     .refresh()
+    ///     .run(AdmSelection::ByPattern(&["service"]))
+    ///     .unwrap();
+    /// ```
     pub fn refresh(&self) -> AdmRefresh {
         AdmRefresh::new(self)
     }
+
     /// Builds a [AdmClear] object.
+    ///
+    /// ```no_run
+    /// use smf::{Adm, AdmSelection};
+    ///
+    /// Adm::new()
+    ///     .clear()
+    ///     .run(AdmSelection::ByPattern(&["service"]))
+    ///     .unwrap();
+    /// ```
     pub fn clear(&self) -> AdmClear {
         AdmClear::new(self)
     }
@@ -788,8 +849,10 @@ where
     Adm::run(args)
 }
 
-/// Enables the service instance(s). The assigned restarter
-/// will attempt to bring the service to the online state.
+/// Created by [Adm::enable], enables the service instance(s).
+///
+/// The assigned restarter will attempt to bring the service to the online
+/// state.
 pub struct AdmEnable<'a> {
     adm: &'a Adm,
     recursive: bool,
@@ -845,8 +908,10 @@ impl<'a> AdmEnable<'a> {
     }
 }
 
-/// Disables the service instance(s). The assigned restarter
-/// will attempt to bring the service to the disabled state.
+/// Created by [Adm::disable], disables the service instance(s).
+///
+/// The assigned restarter will attempt to bring the service to the disabled
+/// state.
 pub struct AdmDisable<'a> {
     adm: &'a Adm,
     comment: Option<String>,
@@ -904,7 +969,7 @@ impl<'a> AdmDisable<'a> {
     }
 }
 
-/// Requests that the provided service instances are restarted.
+/// Created by [Adm::restart], restarts the service instance(s).
 pub struct AdmRestart<'a> {
     adm: &'a Adm,
     abort: bool
@@ -942,6 +1007,8 @@ impl<'a> AdmRestart<'a> {
     }
 }
 
+/// Created by [Adm::refresh], refreshes a snapshot.
+///
 /// Requests that the restarter update the configuration snapshot of all
 /// requested services, replacing it with values from the current configuration.
 pub struct AdmRefresh<'a> {
@@ -971,8 +1038,11 @@ impl<'a> AdmRefresh<'a> {
     }
 }
 
-/// Requests that all provided services, if they are in the `maintenance`
-/// state, are repaired.
+/// Created by [Adm::clear], clears services in a `degraded`/`maintenance` state.
+///
+/// Signals to the restarter that a service instance has been
+/// repaired. If the instance is degraded, requests that the
+/// restarter takes the service to the online state.
 pub struct AdmClear<'a> {
     adm: &'a Adm,
 }
@@ -1006,7 +1076,233 @@ impl<'a> AdmClear<'a> {
  *
  */
 
-struct Properties {
+/// The error type represting a failure to parse a property or property group.
+#[derive(Error, Debug)]
+#[error("Invalid Property: {0}")]
+pub struct PropertyParseError(String);
+
+fn valid_property_substring(s: &str) -> bool {
+    if s.contains(char::is_whitespace) || s.contains('/') {
+        return false;
+    }
+    return true;
+}
+
+/// The group portion of a property name.
+///
+/// Property names typically have the form:
+///   group/property
+/// This object represents the "group" portion of that object.
+#[derive(Debug, PartialEq)]
+pub struct PropertyGroupName {
+    group: String,
+}
+
+impl PropertyGroupName {
+    /// Creates a new group name object, returning an error if it cannot be
+    /// parsed as a group name.
+    pub fn new<S>(group: S) -> Result<PropertyGroupName, PropertyParseError>
+    where
+        S: AsRef<str>
+    {
+        if !valid_property_substring(group.as_ref()) {
+            return Err(PropertyParseError("Invalid property group".to_string()));
+        }
+        Ok(PropertyGroupName {
+            group: group.as_ref().into(),
+        })
+    }
+
+    /// Returns the name of the group as a string.
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+}
+
+impl AsRef<str> for PropertyGroupName {
+    fn as_ref(&self) -> &str {
+        &self.group
+    }
+}
+
+impl ToString for PropertyGroupName {
+    fn to_string(&self) -> String {
+        self.group.clone()
+    }
+}
+
+/// The group and property portions of a property name.
+///
+/// Property names typically have the form:
+///   group/property
+/// This object represents that entire object.
+#[derive(Debug, PartialEq)]
+pub struct PropertyName {
+    group: PropertyGroupName,
+    property: String,
+}
+
+impl PropertyName {
+    /// Creates a new property name object, returning an error if it cannot be
+    /// parsed.
+    pub fn new<S1, S2>(group: S1, property: S2) -> Result<PropertyName, PropertyParseError>
+    where
+        S1: AsRef<str>,
+        S2: AsRef<str>,
+    {
+        let group = PropertyGroupName::new(group)?;
+        if !valid_property_substring(property.as_ref()) {
+            return Err(PropertyParseError("Invalid property value".to_string()));
+        }
+
+        Ok(PropertyName {
+            group,
+            property: property.as_ref().into(),
+        })
+    }
+
+    /// Returns the name of the group as a string.
+    pub fn group(&self) -> &str {
+        &self.group.as_ref()
+    }
+    /// Returns the name of the property as a string.
+    pub fn property(&self) -> &str {
+        &self.property
+    }
+}
+
+impl FromStr for PropertyName {
+    type Err = PropertyParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut iter = s.split('/');
+        let group = iter.next().ok_or("Missing Group")
+            .map_err(|e| PropertyParseError(e.to_string()))?;
+        let property = iter.next().ok_or("Missing Property")
+            .map_err(|e| PropertyParseError(e.to_string()))?;
+        if let Some(s) = iter.next() {
+            Err(PropertyParseError(
+                format!("Unexpected string in property name: {}", s)
+            ))
+        } else {
+            PropertyName::new(group, property)
+        }
+    }
+}
+
+impl ToString for PropertyName {
+    fn to_string(&self) -> String {
+        format!("{}/{}", self.group.as_ref(), self.property)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Property {
+    name: PropertyName,
+    value: PropertyValue,
+}
+
+impl FromStr for Property {
+    type Err = PropertyParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut iter = s.split(' ');
+        let name_str = iter.next().ok_or("Missing FMRI")
+            .map_err(|err| PropertyParseError(err.to_string()))?;
+        let name = str::parse::<PropertyName>(name_str)?;
+        let r = iter.collect::<Vec<&str>>().join(" ");
+        let value = str::parse::<PropertyValue>(&r)?;
+
+        Ok(Property {
+            name,
+            value,
+        })
+    }
+}
+
+/// Defines the values properties may have.
+#[derive(Debug, PartialEq)]
+pub enum PropertyValue {
+    /// A boolean value.
+    Boolean(bool),
+    /// An unsigned integer value.
+    Count(u64),
+    /// An signed integer value.
+    Integer(i64),
+    /// An 8-bit NULL-terminated string.
+    ///
+    /// Disclaimer: This library treats Astring and Ustring objects
+    /// identically, only distinguishing by the provided type name.
+    Astring(String),
+    /// An 8-bit UTF-8 string string.
+    Ustring(String),
+    /// One or more FMRI objects.
+    FMRI(Vec<String>),
+    /// Any other property type.
+    Other(String),
+}
+
+impl FromStr for PropertyValue {
+    type Err = PropertyParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut iter = s.split(' ');
+        let value = || -> Result<PropertyValue, String> {
+            let ty = iter.next().ok_or("Missing type")?;
+
+            let value = iter.collect::<Vec<&str>>().join(" ");
+
+            let pv = match ty {
+                "boolean" => {
+                    PropertyValue::Boolean(
+                        value.parse::<bool>().map_err(|err| err.to_string())?
+                    )
+                },
+                "count" => {
+                    PropertyValue::Count(
+                        value.parse::<u64>().map_err(|err| err.to_string())?
+                    )
+                }
+                "integer" => {
+                    PropertyValue::Integer(
+                        value.parse::<i64>().map_err(|err| err.to_string())?
+                    )
+                }
+                "astring" => { PropertyValue::Astring(value) }
+                "ustring" => { PropertyValue::Ustring(value) }
+                "fmri" => {
+                    PropertyValue::FMRI(
+                        value.split_whitespace()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<String>>()
+                    )
+                }
+                _ => { PropertyValue::Other(value) }
+            };
+            Ok(pv)
+        }().map_err(|err| PropertyParseError(err))?;
+
+        Ok(value)
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum PropertyError {
+    /// Failure to parse.
+    #[error("Parse error: {0}")]
+    ParseError(#[from] PropertyParseError),
+
+    /// Failure to execute a subcommand.
+    #[error("Failed to execute command: {0}")]
+    Command(std::io::Error),
+
+    /// Failure reading a command's stdout (or non-zero error code).
+    #[error("Failed to parse command output: {0}")]
+    CommandOutput(#[from] CommandOutputError),
+}
+
+/// Queries the properties of a service or instance.
+pub struct Properties {
     zone: Option<String>,
 }
 
@@ -1017,7 +1313,8 @@ impl Default for Properties {
 }
 
 impl Properties {
-    fn new() -> Self {
+    /// Creates a new property-querying object.
+    pub fn new() -> Self {
         Properties {
             zone: None,
         }
@@ -1029,14 +1326,39 @@ impl Properties {
         self
     }
 
-    // TODO: fqtv args here
-
-    pub fn list(&self) -> PropertiesList {
-        PropertiesList::new()
+    fn add_zone_to_args(&self, args: &mut Vec<String>) {
+        // TODO-feature: Add support for "-Z", all zones.
+        if let Some(zone) = &self.zone {
+            args.push("-z".to_string());
+            args.push(zone.to_string());
+        }
     }
 
-    pub fn wait(&self) -> PropertiesWait {
-        PropertiesWait {}
+    /// Acquires a [PropertyLookup] command, capable of listing properties.
+    ///
+    /// ```no_run
+    /// let name = smf::PropertyName::new("general", "comment").unwrap();
+    /// let property = smf::Properties::new()
+    ///     .lookup()
+    ///     .run(&name, "my-service")
+    ///     .unwrap();
+    /// ```
+    pub fn lookup(&self) -> PropertyLookup {
+        PropertyLookup::new(self)
+    }
+
+    /// Acquires a [PropertyWait] command, capable of waiting for properties
+    /// to change.
+    ///
+    /// ```no_run
+    /// let group = smf::PropertyGroupName::new("general").unwrap();
+    /// let property = smf::Properties::new()
+    ///     .wait()
+    ///     .run(&group, "my-service")
+    ///     .unwrap();
+    /// ```
+    pub fn wait(&self) -> PropertyWait {
+        PropertyWait::new(self)
     }
 }
 
@@ -1063,16 +1385,17 @@ pub enum PropertyClass {
     DirectlyAttachedComposed
 }
 
-struct PropertiesList {
+/// Created by [Properties::lookup], a builder object capable of listing properties.
+pub struct PropertyLookup<'a> {
+    property_base: &'a Properties,
     attachment: PropertyClass,
-    props: Vec<String>,
 }
 
-impl PropertiesList {
-    fn new() -> Self {
-        PropertiesList {
+impl<'a> PropertyLookup<'a> {
+    fn new(property_base: &'a Properties) -> Self {
+        PropertyLookup {
+            property_base,
             attachment: PropertyClass::Effective(None),
-            props: vec![],
         }
     }
 
@@ -1083,46 +1406,111 @@ impl PropertiesList {
         self
     }
 
-    /// Requests a property or property group.
-    ///
-    /// Invoking this method multiple times is additive.
-    pub fn property<S: AsRef<str>>(&mut self, prop: S) -> &mut Self {
-        self.props.push(prop.as_ref().into());
-        self
+    fn add_attachment_to_args(&self, args: &mut Vec<String>) {
+        match &self.attachment {
+            PropertyClass::Effective(None) => (),
+            PropertyClass::Effective(Some(snap)) => {
+                args.push("-s".into());
+                args.push(snap.to_string());
+            }
+            PropertyClass::DirectlyAttachedUncomposed => args.push("-C".into()),
+            PropertyClass::DirectlyAttachedComposed => args.push("-c".into()),
+        }
     }
 
+    /// Looks up a property for a specified FMRI.
+    pub fn run<S>(&mut self, property: &PropertyName, fmri: S)
+        -> Result<Property, PropertyError>
+    where
+        S: AsRef<str>,
+    {
+        let mut args = vec![];
+
+        // Longer output, but more consistent parsing.
+        args.push("-t".to_string());
+
+        // [-C | -c | -s snapshot]
+        self.add_attachment_to_args(&mut args);
+
+        // [-z zone]
+        self.property_base.add_zone_to_args(&mut args);
+
+        // [-p [name/name]]
+        // To simplify parsing, restrict access to a single property.
+        //
+        // For scripting, this is the most common use-case anyway.
+        args.push("-p".to_string());
+        args.push(property.to_string());
+
+        // {FMRI | pattern}
+        // Requests a single FMRI.
+        args.push(fmri.as_ref().into());
+
+        let out = std::process::Command::new("/usr/bin/svcprop")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(|err| PropertyError::Command(err))?
+            .read_stdout()
+            .map_err(|err| PropertyError::CommandOutput(err))?;
+
+        return out.parse().map_err(|err: PropertyParseError| err.into());
+    }
 }
 
-struct PropertiesWait {}
+/// Created by [Properties::wait], a builder object waiting for a property group to change.
+pub struct PropertyWait<'a> {
+    property_base: &'a Properties,
+}
 
-// -p [name]    : Select all properties specified by name or pg/prop
-// -p [pg/prop]
-//
-// -z [zone]    : Select zone
-//
-// -f: Multi-property output format + Full FMRIs as designators
-// -t: Multi-property output format
-// -q: No output (XXX Ignore?)
-//
-//
-// svcprop [-fqtv] [-C | -c | -s snapshot] [-z zone] [-p name]... {FMRI | pattern}...
-// svcprop -w [-fqtv] [-z zone] [-p name] {FMRI | pattern}...
-//
-// TODO: What is composition?
-//
-// Effective properties of SERVICE:
-//      Directly attached properties.
-// Effective properties of SERVICE INSTANCE:
-//      Union of...
-//          ... properties in the composed view of running snapshot
-//          ... properties in nonpersistent property groups in the composed view
-//
-// <no option>: Use effective properties.
-// -C: Use directly attached props, without composition
-// -c: For instances use the composed view of directly attached properties
-// -s name: Use the composed view of the name snapshot for service instances
-//
-// -w Wait for the property to change before printing. IMPLIES -C.
+impl<'a> PropertyWait<'a> {
+    fn new(property_base: &'a Properties) -> Self {
+        PropertyWait {
+            property_base,
+        }
+    }
+
+    /// Waits until a specified property group changes before printing.
+    ///
+    /// Returns requested property - note that it might not be the
+    /// property which changed.
+    pub fn run<S>(&mut self, property: &PropertyGroupName, fmri: S)
+        -> Result<Property, PropertyError>
+    where
+        S: AsRef<str>,
+    {
+        let mut args = vec![];
+
+        args.push("-w".to_string());
+
+        // Longer output, but more consistent parsing.
+        args.push("-t".to_string());
+
+        // [-z zone]
+        self.property_base.add_zone_to_args(&mut args);
+
+        // [-p [name/name]]
+        // To simplify parsing, restrict access to a single property.
+        //
+        // For scripting, this is the most common use-case anyway.
+        args.push("-p".to_string());
+        args.push(property.to_string());
+
+        // {FMRI | pattern}
+        // Requests a single FMRI.
+        args.push(fmri.as_ref().into());
+
+        let out = std::process::Command::new("/usr/bin/svcprop")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(|err| PropertyError::Command(err))?
+            .read_stdout()
+            .map_err(|err| PropertyError::CommandOutput(err))?;
+
+        return out.parse().map_err(|err: PropertyParseError| err.into());
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1207,6 +1595,49 @@ mod tests {
             query.is_ok(),
             format!("Unexpected err: {}", query.err().unwrap())
         );
+    }
+
+    #[test]
+    fn test_svcprop_parse_property_value() {
+        let input = "astring hello";
+        let value = str::parse::<PropertyValue>(&input).unwrap();
+        assert!(matches!(value, PropertyValue::Astring(s) if s == "hello"));
+    }
+
+    #[test]
+    fn test_svcprop_parse_property() {
+        let input = "general/comment astring hello";
+        let property = str::parse::<Property>(&input).unwrap();
+        assert_eq!(property.name.to_string(), "general/comment");
+        assert!(matches!(property.value, PropertyValue::Astring(s) if s == "hello"));
+    }
+
+    #[test]
+    fn test_svcprop_lookup_property_astring() {
+        let property_name = PropertyName::new("restarter", "state").unwrap();
+        let property = Properties::new()
+            .lookup()
+            .run(&property_name, "svc:/system/filesystem/root:default")
+            .unwrap();
+        assert_eq!(property_name, property.name);
+        match &property.value {
+            PropertyValue::Astring(val) => assert_eq!(&val[..], "online"),
+            _ => panic!("Unexpected value: {:#?}", property.value),
+        }
+    }
+
+    #[test]
+    fn test_svcprop_lookup_property_integer() {
+        let property_name = PropertyName::new("restarter", "start_pid").unwrap();
+        let property = Properties::new()
+            .lookup()
+            .run(&property_name, "svc:/system/filesystem/root:default")
+            .unwrap();
+        assert_eq!(property_name, property.name);
+        match &property.value {
+            PropertyValue::Count(_) => (),
+            _ => panic!("Unexpected value: {:#?}", property.value),
+        }
     }
 
     // TODO-test: Queries w/flags in them? (Filter them out / flag as errors!)

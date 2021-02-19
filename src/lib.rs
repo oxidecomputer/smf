@@ -20,4 +20,11 @@ pub use crate::smf::{
     AdmRestart,
     AdmRefresh,
     AdmClear,
+    Properties,
+    PropertyLookup,
+    PropertyWait,
+    PropertyClass,
+    PropertyName,
+    PropertyValue,
+    PropertyGroupName,
 };
