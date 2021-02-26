@@ -1,9 +1,9 @@
 [package]
 name = "smf"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Sean Klein <sean@oxide.computer>"]
 edition = "2018"
-repositroy = "https://github.com/oxidecomputer/smf"
+repository = "https://github.com/oxidecomputer/smf"
 description = "Rust bindings for the illumos SMF system"
 license = "MPL-2.0"
 

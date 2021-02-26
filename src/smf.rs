@@ -24,7 +24,8 @@ impl OutputExt for std::process::Output {
         let stderr = String::from_utf8_lossy(&self.stderr).trim().to_string();
 
         if !self.status.success() {
-            let exit_code = self.status
+            let exit_code = self
+                .status
                 .code()
                 .map(|code| format!("{}", code))
                 .unwrap_or_else(|| "<No exit code>".to_string());
@@ -88,7 +89,8 @@ impl ToString for SMFState {
             SMFState::Online => "ON",
             SMFState::Legacy => "LRC",
             SMFState::Uninitialized => "UN",
-        }.to_string()
+        }
+        .to_string()
     }
 }
 
@@ -159,8 +161,7 @@ impl FromStr for SvcStatus {
                 })
                 .ok_or("Missing ContractID")??;
             let instance_name = iter.next().ok_or("Missing Instance Name")?.to_string();
-            let next_state =
-                SMFState::from_str(iter.next().ok_or("Missing Instance Name")?);
+            let next_state = SMFState::from_str(iter.next().ok_or("Missing Instance Name")?);
             let scope_name = iter.next().ok_or("Missing Scope Name")?.to_string();
             let service_name = iter.next().ok_or("Missing Service Name")?.to_string();
             let state =
@@ -190,7 +191,8 @@ impl FromStr for SvcStatus {
                 zone,
                 description,
             })
-        }().map_err(|err| QueryError::Parse(err))?;
+        }()
+        .map_err(QueryError::Parse)?;
 
         Ok(status)
     }
@@ -300,15 +302,12 @@ impl Query {
     }
 
     // Issues command, returns stdout.
-    fn issue_command(
-        &self,
-        args: Vec<String>,
-    ) -> Result<String, QueryError> {
+    fn issue_command(&self, args: Vec<String>) -> Result<String, QueryError> {
         Ok(std::process::Command::new("/usr/bin/svcs")
             .env_clear()
             .args(args)
             .output()
-            .map_err(|err| QueryError::Command(err))?
+            .map_err(QueryError::Command)?
             .read_stdout()?)
     }
 
@@ -316,7 +315,8 @@ impl Query {
         &self,
         args: Vec<String>,
     ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
-        Ok(self.issue_command(args)?
+        Ok(self
+            .issue_command(args)?
             .split('\n')
             .map(|s| s.parse::<SvcStatus>())
             .collect::<Result<Vec<SvcStatus>, _>>()?
@@ -345,9 +345,7 @@ impl Query {
     /// types](https://github.com/rust-lang/rust/issues/27336) for more context
     /// on why this method exists - it is more ergonomic than invoking
     /// [Self::get_status] with [QuerySelection::All] directly.
-    pub fn get_status_all(
-        &self,
-    ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
+    pub fn get_status_all(&self) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
         // The `QuerySelection::All` variant of the enum doesn't actually use the
         // type parameters at all, so it doesn't care what types are supplied as
         // parameters.
@@ -378,7 +376,7 @@ impl Query {
             QuerySelection::All => args.push("-a".to_string()),
             QuerySelection::ByRestarter(restarter) => {
                 args.push(format!("-R {}", restarter.as_ref()));
-            },
+            }
             QuerySelection::ByPattern(names) => self.add_patterns(&mut args, names),
         }
 
@@ -458,7 +456,7 @@ impl Query {
     /// ```
     pub fn get_log_files<S, I>(
         &self,
-        patterns: I
+        patterns: I,
     ) -> Result<impl Iterator<Item = PathBuf>, QueryError>
     where
         S: AsRef<str>,
@@ -467,12 +465,13 @@ impl Query {
         let mut args = vec!["-L".to_string()];
         self.add_zone_to_args(&mut args);
         self.add_patterns(&mut args, patterns);
-        Ok(self.issue_command(args)?
+        Ok(self
+            .issue_command(args)?
             .split('\n')
             .map(|s| s.parse::<PathBuf>())
-            .collect::<Result<Vec<PathBuf>, _>>().unwrap()
-            .into_iter()
-        )
+            .collect::<Result<Vec<PathBuf>, _>>()
+            .unwrap()
+            .into_iter())
     }
 }
 
@@ -534,6 +533,21 @@ impl Config {
     pub fn delete() -> ConfigDelete {
         ConfigDelete::new()
     }
+
+    /// Builds a [ConfigSetProperty] object.
+    ///
+    /// ```no_run
+    /// let property = smf::Property::new(
+    ///     smf::PropertyName::new("group", "comment").unwrap(),
+    ///     smf::PropertyValue::Astring("hello".to_string())
+    /// );
+    /// smf::Config::set_property("my_service:default")
+    ///     .run(property)
+    ///     .unwrap();
+    /// ```
+    pub fn set_property<S: AsRef<str>>(fmri: S) -> ConfigSetProperty {
+        ConfigSetProperty::new(fmri.as_ref().into())
+    }
 }
 
 trait ConfigSubcommand {
@@ -549,9 +563,7 @@ pub struct ConfigExport {
 
 impl ConfigExport {
     fn new() -> Self {
-        ConfigExport {
-            archive: false,
-        }
+        ConfigExport { archive: false }
     }
 
     /// Archives all values, including protected information.
@@ -573,7 +585,7 @@ impl ConfigExport {
             .env_clear()
             .args(args)
             .output()
-            .map_err(|err| ConfigError::Command(err))?
+            .map_err(ConfigError::Command)?
             .read_stdout()?)
     }
 }
@@ -586,9 +598,7 @@ pub struct ConfigImport {
 
 impl ConfigImport {
     fn new() -> Self {
-        ConfigImport {
-            validate: true,
-        }
+        ConfigImport { validate: true }
     }
 
     /// Requests that manifest data should not be validated before being
@@ -611,7 +621,7 @@ impl ConfigImport {
             .env_clear()
             .args(args)
             .output()
-            .map_err(|err| ConfigError::Command(err))?
+            .map_err(ConfigError::Command)?
             .read_stdout()
             .map(|_| ())
             .map_err(|err| err.into())
@@ -625,9 +635,7 @@ pub struct ConfigDelete {
 
 impl ConfigDelete {
     fn new() -> Self {
-        ConfigDelete {
-            force: false,
-        }
+        ConfigDelete { force: false }
     }
 
     /// Forcefully deletes the entity.
@@ -652,7 +660,40 @@ impl ConfigDelete {
             .env_clear()
             .args(args)
             .output()
-            .map_err(|err| ConfigError::Command(err))?
+            .map_err(ConfigError::Command)?
+            .read_stdout()
+            .map(|_| ())
+            .map_err(|err| err.into())
+    }
+}
+
+/// Created by [Config::set_property], sets a property for a service.
+pub struct ConfigSetProperty {
+    fmri: String,
+}
+
+impl ConfigSetProperty {
+    fn new(fmri: String) -> Self {
+        ConfigSetProperty { fmri }
+    }
+
+    /// Runs the deletion command.
+    pub fn run(&mut self, property: Property) -> Result<(), ConfigError> {
+        let mut args = vec![];
+        args.push("-s".to_string());
+        args.push(self.fmri.clone());
+        args.push("setprop".to_string());
+        args.push(format!(
+            "{} = {}",
+            property.name.to_string(),
+            property.value.to_string()
+        ));
+
+        std::process::Command::new("/usr/sbin/svccfg")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(ConfigError::Command)?
             .read_stdout()
             .map(|_| ())
             .map_err(|err| err.into())
@@ -728,7 +769,7 @@ impl Adm {
             .env_clear()
             .args(args)
             .output()
-            .map_err(|err| AdmError::Command(err))?
+            .map_err(AdmError::Command)?
             .read_stdout()?;
         Ok(())
     }
@@ -812,7 +853,7 @@ impl Adm {
 /// Private trait to help implement a subcommand.
 trait AdmSubcommand {
     /// Returns the base Adm object.
-    fn adm(&self) -> &super::Adm;
+    fn adm(&self) -> &Adm;
 
     /// Returns the name of the Adm subcommand.
     fn command_name(&self) -> &str;
@@ -822,8 +863,10 @@ trait AdmSubcommand {
 }
 
 /// Shared mechanism of running all subcommands created by [Adm].
-fn run_adm_subcommand<C, S, I>(subcommand: &C,
-                               selection: AdmSelection<S, I>) -> Result<(), AdmError>
+fn run_adm_subcommand<C, S, I>(
+    subcommand: &C,
+    selection: AdmSelection<S, I>,
+) -> Result<(), AdmError>
 where
     C: AdmSubcommand,
     S: AsRef<str>,
@@ -839,12 +882,12 @@ where
             args.push(state.to_string());
             args.push(subcommand.command_name().to_string());
             subcommand.add_to_args(&mut args);
-        },
+        }
         AdmSelection::ByPattern(pattern) => {
             args.push(subcommand.command_name().to_string());
             subcommand.add_to_args(&mut args);
             args.extend(pattern.into_iter().map(|s| s.as_ref().to_string()));
-        },
+        }
     }
     Adm::run(args)
 }
@@ -861,12 +904,22 @@ pub struct AdmEnable<'a> {
 }
 
 impl<'a> AdmSubcommand for AdmEnable<'a> {
-    fn adm(&self) -> &Adm { &self.adm }
-    fn command_name(&self) -> &str { "enable" }
+    fn adm(&self) -> &Adm {
+        &self.adm
+    }
+    fn command_name(&self) -> &str {
+        "enable"
+    }
     fn add_to_args(&self, args: &mut Vec<String>) {
-        if self.recursive { args.push("-r".to_string()) }
-        if self.synchronous { args.push("-s".to_string()) }
-        if self.temporary { args.push("-t".to_string()) }
+        if self.recursive {
+            args.push("-r".to_string())
+        }
+        if self.synchronous {
+            args.push("-s".to_string())
+        }
+        if self.temporary {
+            args.push("-t".to_string())
+        }
     }
 }
 
@@ -920,15 +973,23 @@ pub struct AdmDisable<'a> {
 }
 
 impl<'a> AdmSubcommand for AdmDisable<'a> {
-    fn adm(&self) -> &Adm { &self.adm }
-    fn command_name(&self) -> &str { "disable" }
+    fn adm(&self) -> &Adm {
+        &self.adm
+    }
+    fn command_name(&self) -> &str {
+        "disable"
+    }
     fn add_to_args(&self, args: &mut Vec<String>) {
         if let Some(ref comment) = self.comment {
             args.push("-c".to_string());
             args.push(comment.to_string());
         }
-        if self.synchronous { args.push("-s".to_string()) }
-        if self.temporary { args.push("-t".to_string()) }
+        if self.synchronous {
+            args.push("-s".to_string())
+        }
+        if self.temporary {
+            args.push("-t".to_string())
+        }
     }
 }
 
@@ -972,23 +1033,26 @@ impl<'a> AdmDisable<'a> {
 /// Created by [Adm::restart], restarts the service instance(s).
 pub struct AdmRestart<'a> {
     adm: &'a Adm,
-    abort: bool
+    abort: bool,
 }
 
 impl<'a> AdmSubcommand for AdmRestart<'a> {
-    fn adm(&self) -> &Adm { &self.adm }
-    fn command_name(&self) -> &str { "restart" }
+    fn adm(&self) -> &Adm {
+        &self.adm
+    }
+    fn command_name(&self) -> &str {
+        "restart"
+    }
     fn add_to_args(&self, args: &mut Vec<String>) {
-        if self.abort { args.push("-d".to_string()) }
+        if self.abort {
+            args.push("-d".to_string())
+        }
     }
 }
 
 impl<'a> AdmRestart<'a> {
     fn new(adm: &'a Adm) -> Self {
-        Self {
-            adm,
-            abort: false,
-        }
+        Self { adm, abort: false }
     }
     /// Requests that the restarter should send a `SIGABRT` signal
     /// to all members of the contract before restarting the service.
@@ -1016,16 +1080,18 @@ pub struct AdmRefresh<'a> {
 }
 
 impl<'a> AdmSubcommand for AdmRefresh<'a> {
-    fn adm(&self) -> &Adm { &self.adm }
-    fn command_name(&self) -> &str { "refresh" }
+    fn adm(&self) -> &Adm {
+        &self.adm
+    }
+    fn command_name(&self) -> &str {
+        "refresh"
+    }
     fn add_to_args(&self, _args: &mut Vec<String>) {}
 }
 
 impl<'a> AdmRefresh<'a> {
     fn new(adm: &'a Adm) -> Self {
-        Self {
-            adm,
-        }
+        Self { adm }
     }
 
     /// Runs the command.
@@ -1048,16 +1114,18 @@ pub struct AdmClear<'a> {
 }
 
 impl<'a> AdmSubcommand for AdmClear<'a> {
-    fn adm(&self) -> &Adm { &self.adm }
-    fn command_name(&self) -> &str { "clear" }
+    fn adm(&self) -> &Adm {
+        &self.adm
+    }
+    fn command_name(&self) -> &str {
+        "clear"
+    }
     fn add_to_args(&self, _args: &mut Vec<String>) {}
 }
 
 impl<'a> AdmClear<'a> {
     fn new(adm: &'a Adm) -> Self {
-        Self {
-            adm,
-        }
+        Self { adm }
     }
 
     /// Runs the command.
@@ -1082,10 +1150,7 @@ impl<'a> AdmClear<'a> {
 pub struct PropertyParseError(String);
 
 fn valid_property_substring(s: &str) -> bool {
-    if s.contains(char::is_whitespace) || s.contains('/') {
-        return false;
-    }
-    return true;
+    !s.contains(char::is_whitespace) && !s.contains('/')
 }
 
 /// The group portion of a property name.
@@ -1103,7 +1168,7 @@ impl PropertyGroupName {
     /// parsed as a group name.
     pub fn new<S>(group: S) -> Result<PropertyGroupName, PropertyParseError>
     where
-        S: AsRef<str>
+        S: AsRef<str>,
     {
         if !valid_property_substring(group.as_ref()) {
             return Err(PropertyParseError("Invalid property group".to_string()));
@@ -1176,14 +1241,19 @@ impl FromStr for PropertyName {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut iter = s.split('/');
-        let group = iter.next().ok_or("Missing Group")
+        let group = iter
+            .next()
+            .ok_or("Missing Group")
             .map_err(|e| PropertyParseError(e.to_string()))?;
-        let property = iter.next().ok_or("Missing Property")
+        let property = iter
+            .next()
+            .ok_or("Missing Property")
             .map_err(|e| PropertyParseError(e.to_string()))?;
         if let Some(s) = iter.next() {
-            Err(PropertyParseError(
-                format!("Unexpected string in property name: {}", s)
-            ))
+            Err(PropertyParseError(format!(
+                "Unexpected string in property name: {}",
+                s
+            )))
         } else {
             PropertyName::new(group, property)
         }
@@ -1196,10 +1266,18 @@ impl ToString for PropertyName {
     }
 }
 
+/// Describes a Property, with both its name and value.
 #[derive(Debug, PartialEq)]
 pub struct Property {
     name: PropertyName,
     value: PropertyValue,
+}
+
+impl Property {
+    /// Creates a new Property object from a name/value pair.
+    pub fn new(name: PropertyName, value: PropertyValue) -> Self {
+        Property { name, value }
+    }
 }
 
 impl FromStr for Property {
@@ -1207,16 +1285,15 @@ impl FromStr for Property {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut iter = s.split(' ');
-        let name_str = iter.next().ok_or("Missing FMRI")
+        let name_str = iter
+            .next()
+            .ok_or("Missing FMRI")
             .map_err(|err| PropertyParseError(err.to_string()))?;
         let name = str::parse::<PropertyName>(name_str)?;
         let r = iter.collect::<Vec<&str>>().join(" ");
         let value = str::parse::<PropertyValue>(&r)?;
 
-        Ok(Property {
-            name,
-            value,
-        })
+        Ok(Property { name, value })
     }
 }
 
@@ -1254,38 +1331,47 @@ impl FromStr for PropertyValue {
 
             let pv = match ty {
                 "boolean" => {
-                    PropertyValue::Boolean(
-                        value.parse::<bool>().map_err(|err| err.to_string())?
-                    )
-                },
+                    PropertyValue::Boolean(value.parse::<bool>().map_err(|err| err.to_string())?)
+                }
                 "count" => {
-                    PropertyValue::Count(
-                        value.parse::<u64>().map_err(|err| err.to_string())?
-                    )
+                    PropertyValue::Count(value.parse::<u64>().map_err(|err| err.to_string())?)
                 }
                 "integer" => {
-                    PropertyValue::Integer(
-                        value.parse::<i64>().map_err(|err| err.to_string())?
-                    )
+                    PropertyValue::Integer(value.parse::<i64>().map_err(|err| err.to_string())?)
                 }
-                "astring" => { PropertyValue::Astring(value) }
-                "ustring" => { PropertyValue::Ustring(value) }
-                "fmri" => {
-                    PropertyValue::FMRI(
-                        value.split_whitespace()
-                            .map(|s| s.to_string())
-                            .collect::<Vec<String>>()
-                    )
-                }
-                _ => { PropertyValue::Other(value) }
+                "astring" => PropertyValue::Astring(value),
+                "ustring" => PropertyValue::Ustring(value),
+                "fmri" => PropertyValue::FMRI(
+                    value
+                        .split_whitespace()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>(),
+                ),
+                _ => PropertyValue::Other(value),
             };
             Ok(pv)
-        }().map_err(|err| PropertyParseError(err))?;
+        }()
+        .map_err(PropertyParseError)?;
 
         Ok(value)
     }
 }
 
+impl ToString for PropertyValue {
+    fn to_string(&self) -> String {
+        match self {
+            PropertyValue::Boolean(b) => format!("boolean: {}", b),
+            PropertyValue::Count(c) => format!("count: {}", c),
+            PropertyValue::Integer(i) => format!("integer: {}", i),
+            PropertyValue::Astring(s) => format!("astring: {}", s),
+            PropertyValue::Ustring(s) => format!("ustring: {}", s),
+            PropertyValue::FMRI(fmris) => format!("fmri: {}", fmris.join(" ")),
+            PropertyValue::Other(s) => s.to_string(),
+        }
+    }
+}
+
+/// Errors which can be returned when querying properties.
 #[derive(Error, Debug)]
 pub enum PropertyError {
     /// Failure to parse.
@@ -1315,9 +1401,7 @@ impl Default for Properties {
 impl Properties {
     /// Creates a new property-querying object.
     pub fn new() -> Self {
-        Properties {
-            zone: None,
-        }
+        Properties { zone: None }
     }
 
     /// Requests a command be issued within a specific zone.
@@ -1382,7 +1466,7 @@ pub enum PropertyClass {
     /// properties of the service.
     ///
     /// This is equivalent to `svcprop -c`.
-    DirectlyAttachedComposed
+    DirectlyAttachedComposed,
 }
 
 /// Created by [Properties::lookup], a builder object capable of listing properties.
@@ -1419,8 +1503,7 @@ impl<'a> PropertyLookup<'a> {
     }
 
     /// Looks up a property for a specified FMRI.
-    pub fn run<S>(&mut self, property: &PropertyName, fmri: S)
-        -> Result<Property, PropertyError>
+    pub fn run<S>(&mut self, property: &PropertyName, fmri: S) -> Result<Property, PropertyError>
     where
         S: AsRef<str>,
     {
@@ -1450,11 +1533,10 @@ impl<'a> PropertyLookup<'a> {
             .env_clear()
             .args(args)
             .output()
-            .map_err(|err| PropertyError::Command(err))?
-            .read_stdout()
-            .map_err(|err| PropertyError::CommandOutput(err))?;
+            .map_err(PropertyError::Command)?
+            .read_stdout()?;
 
-        return out.parse().map_err(|err: PropertyParseError| err.into());
+        out.parse().map_err(|err: PropertyParseError| err.into())
     }
 }
 
@@ -1465,17 +1547,18 @@ pub struct PropertyWait<'a> {
 
 impl<'a> PropertyWait<'a> {
     fn new(property_base: &'a Properties) -> Self {
-        PropertyWait {
-            property_base,
-        }
+        PropertyWait { property_base }
     }
 
     /// Waits until a specified property group changes before printing.
     ///
     /// Returns requested property - note that it might not be the
     /// property which changed.
-    pub fn run<S>(&mut self, property: &PropertyGroupName, fmri: S)
-        -> Result<Property, PropertyError>
+    pub fn run<S>(
+        &mut self,
+        property: &PropertyGroupName,
+        fmri: S,
+    ) -> Result<Property, PropertyError>
     where
         S: AsRef<str>,
     {
@@ -1504,11 +1587,10 @@ impl<'a> PropertyWait<'a> {
             .env_clear()
             .args(args)
             .output()
-            .map_err(|err| PropertyError::Command(err))?
-            .read_stdout()
-            .map_err(|err| PropertyError::CommandOutput(err))?;
+            .map_err(PropertyError::Command)?
+            .read_stdout()?;
 
-        return out.parse().map_err(|err: PropertyParseError| err.into());
+        out.parse().map_err(|err: PropertyParseError| err.into())
     }
 }
 
