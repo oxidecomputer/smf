@@ -42,7 +42,7 @@ impl OutputExt for std::process::Output {
 ///
 /// For more information, refer to the "States" section of the smf man page.
 #[derive(Debug, PartialEq)]
-pub enum SMFState {
+pub enum SmfState {
     /// The instance is disabled, must be explicitly enabled
     /// to later turn on.
     Disabled,
@@ -64,31 +64,31 @@ pub enum SMFState {
     Uninitialized,
 }
 
-impl SMFState {
-    fn from_str(val: &str) -> Option<SMFState> {
+impl SmfState {
+    fn from_str(val: &str) -> Option<SmfState> {
         match val {
-            "ON" => Some(SMFState::Online),
-            "OFF" => Some(SMFState::Offline),
-            "DGD" => Some(SMFState::Degraded),
-            "DIS" => Some(SMFState::Disabled),
-            "MNT" => Some(SMFState::Maintenance),
-            "UN" => Some(SMFState::Uninitialized),
-            "LRC" => Some(SMFState::Legacy),
+            "ON" => Some(SmfState::Online),
+            "OFF" => Some(SmfState::Offline),
+            "DGD" => Some(SmfState::Degraded),
+            "DIS" => Some(SmfState::Disabled),
+            "MNT" => Some(SmfState::Maintenance),
+            "UN" => Some(SmfState::Uninitialized),
+            "LRC" => Some(SmfState::Legacy),
             _ => None,
         }
     }
 }
 
-impl ToString for SMFState {
+impl ToString for SmfState {
     fn to_string(&self) -> String {
         match self {
-            SMFState::Disabled => "DIS",
-            SMFState::Degraded => "DGD",
-            SMFState::Maintenance => "MNT",
-            SMFState::Offline => "OFF",
-            SMFState::Online => "ON",
-            SMFState::Legacy => "LRC",
-            SMFState::Uninitialized => "UN",
+            SmfState::Disabled => "DIS",
+            SmfState::Degraded => "DGD",
+            SmfState::Maintenance => "MNT",
+            SmfState::Offline => "OFF",
+            SmfState::Online => "ON",
+            SmfState::Legacy => "LRC",
+            SmfState::Uninitialized => "UN",
         }
         .to_string()
     }
@@ -130,13 +130,13 @@ pub struct SvcStatus {
     pub instance_name: String,
     /// The abbreviated name of the next state.
     /// If this field is `None`, the service is not changing states.
-    pub next_state: Option<SMFState>,
+    pub next_state: Option<SmfState>,
     /// The scope name of the service instance.
     pub scope_name: String,
     /// The service name of the service instance.
     pub service_name: String,
     /// The service instance state.
-    pub state: SMFState,
+    pub state: SmfState,
     /// The time the service transitioned to the current state.
     pub service_time: String,
     /// The zone in which the service exists.
@@ -161,11 +161,11 @@ impl FromStr for SvcStatus {
                 })
                 .ok_or("Missing ContractID")??;
             let instance_name = iter.next().ok_or("Missing Instance Name")?.to_string();
-            let next_state = SMFState::from_str(iter.next().ok_or("Missing Instance Name")?);
+            let next_state = SmfState::from_str(iter.next().ok_or("Missing Instance Name")?);
             let scope_name = iter.next().ok_or("Missing Scope Name")?.to_string();
             let service_name = iter.next().ok_or("Missing Service Name")?.to_string();
             let state =
-                SMFState::from_str(iter.next().ok_or("Missing State")?).ok_or("Missing State")?;
+                SmfState::from_str(iter.next().ok_or("Missing State")?).ok_or("Missing State")?;
             let service_time = iter.next().ok_or("Missing Service Time")?.to_string();
             let zone = iter.next().ok_or("Missing Zone")?.to_string();
             let description = iter
@@ -200,8 +200,8 @@ impl FromStr for SvcStatus {
 
 #[derive(Copy, Clone)]
 enum SvcColumn {
-    FMRI,
-    ContractID,
+    Fmri,
+    ContractId,
     InstanceName,
     NextState,
     ScopeName,
@@ -215,8 +215,8 @@ enum SvcColumn {
 impl SvcColumn {
     fn to_str(&self) -> &str {
         match self {
-            SvcColumn::FMRI => "FMRI",
-            SvcColumn::ContractID => "CTID",
+            SvcColumn::Fmri => "FMRI",
+            SvcColumn::ContractId => "CTID",
             SvcColumn::InstanceName => "INST",
             SvcColumn::NextState => "NSTA",
             SvcColumn::ScopeName => "SCOPE",
@@ -283,8 +283,8 @@ impl Query {
         args.push("-Ho".to_string());
         args.push(
             [
-                SvcColumn::FMRI,
-                SvcColumn::ContractID,
+                SvcColumn::Fmri,
+                SvcColumn::ContractId,
                 SvcColumn::InstanceName,
                 SvcColumn::NextState,
                 SvcColumn::ScopeName,
@@ -495,7 +495,7 @@ pub enum ConfigError {
 
 /// Provides an API to manipulate the configuration files for SMF services.
 ///
-/// Acts as a wrapper around the underlying `svcfg` command.
+/// Acts as a wrapper around the underlying `svccfg` command.
 pub struct Config {}
 
 impl Config {
@@ -532,6 +532,16 @@ impl Config {
     /// ```
     pub fn delete() -> ConfigDelete {
         ConfigDelete::new()
+    }
+
+    /// Builds a [ConfigAdd] object.
+    ///
+    /// ```no_run
+    /// smf::Config::add("svc:/system/service:parent")
+    ///     .run("child")
+    ///     .unwrap();
+    pub fn add<S: AsRef<str>>(fmri: S) -> ConfigAdd {
+        ConfigAdd::new(fmri.as_ref().into())
     }
 
     /// Builds a [ConfigSetProperty] object.
@@ -574,12 +584,11 @@ impl ConfigExport {
 
     /// Runs the export command, returning the manifest output as a string.
     pub fn run<S: AsRef<str>>(&mut self, fmri: S) -> Result<String, ConfigError> {
-        let mut args = vec![];
-        args.push("export".to_string());
+        let mut args = vec!["export"];
         if self.archive {
-            args.push("-a".to_string());
+            args.push("-a");
         }
-        args.push(fmri.as_ref().into());
+        args.push(fmri.as_ref());
 
         Ok(std::process::Command::new("/usr/sbin/svccfg")
             .env_clear()
@@ -610,12 +619,12 @@ impl ConfigImport {
 
     /// Runs the import command.
     pub fn run<P: AsRef<Path>>(&mut self, path: P) -> Result<(), ConfigError> {
-        let mut args = vec![];
-        args.push("import".to_string());
+        let mut args = vec!["import"];
         if self.validate {
-            args.push("-V".to_string());
+            args.push("-V");
         }
-        args.push(path.as_ref().to_string_lossy().to_string());
+        let path_str = path.as_ref().to_string_lossy();
+        args.push(&path_str);
 
         std::process::Command::new("/usr/sbin/svccfg")
             .env_clear()
@@ -649,13 +658,36 @@ impl ConfigDelete {
 
     /// Runs the deletion command.
     pub fn run<S: AsRef<str>>(&mut self, fmri: S) -> Result<(), ConfigError> {
-        let mut args = vec![];
-        args.push("delete".to_string());
+        let mut args = vec!["delete"];
         if self.force {
-            args.push("-f".to_string());
+            args.push("-f");
         }
-        args.push(fmri.as_ref().into());
+        args.push(fmri.as_ref());
 
+        std::process::Command::new("/usr/sbin/svccfg")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(ConfigError::Command)?
+            .read_stdout()
+            .map(|_| ())
+            .map_err(|err| err.into())
+    }
+}
+
+/// Created by [Config::add], creates a new child instance of a service.
+pub struct ConfigAdd {
+    fmri: String,
+}
+
+impl ConfigAdd {
+    fn new(fmri: String) -> Self {
+        ConfigAdd { fmri }
+    }
+
+    /// Runs the add entity command.
+    pub fn run<S: AsRef<str>>(&mut self, child: S) -> Result<(), ConfigError> {
+        let args = vec!["-s", &self.fmri, "add", child.as_ref()];
         std::process::Command::new("/usr/sbin/svccfg")
             .env_clear()
             .args(args)
@@ -677,18 +709,15 @@ impl ConfigSetProperty {
         ConfigSetProperty { fmri }
     }
 
-    /// Runs the deletion command.
-    pub fn run(&mut self, property: Property) -> Result<(), ConfigError> {
-        let mut args = vec![];
-        args.push("-s".to_string());
-        args.push(self.fmri.clone());
-        args.push("setprop".to_string());
-        args.push(format!(
+    /// Runs the set property command.
+    pub fn run(&self, property: Property) -> Result<(), ConfigError> {
+        let prop = format!(
             "{} = {}",
             property.name.to_string(),
             property.value.to_string()
-        ));
+        );
 
+        let args = vec!["-s", &self.fmri, "setprop", &prop];
         std::process::Command::new("/usr/sbin/svccfg")
             .env_clear()
             .args(args)
@@ -725,7 +754,7 @@ where
     I: IntoIterator<Item = S>,
 {
     /// Selects all services which are in the provided state.
-    ByState(SMFState),
+    ByState(SmfState),
     /// All service instance which match the provided strings as either an FMRI
     /// or pattern (globs allowed) matching FMRIs.
     ByPattern(I),
@@ -1314,7 +1343,7 @@ pub enum PropertyValue {
     /// An 8-bit UTF-8 string string.
     Ustring(String),
     /// One or more FMRI objects.
-    FMRI(Vec<String>),
+    Fmri(Vec<String>),
     /// Any other property type.
     Other(String),
 }
@@ -1341,7 +1370,7 @@ impl FromStr for PropertyValue {
                 }
                 "astring" => PropertyValue::Astring(value),
                 "ustring" => PropertyValue::Ustring(value),
-                "fmri" => PropertyValue::FMRI(
+                "fmri" => PropertyValue::Fmri(
                     value
                         .split_whitespace()
                         .map(|s| s.to_string())
@@ -1365,7 +1394,7 @@ impl ToString for PropertyValue {
             PropertyValue::Integer(i) => format!("integer: {}", i),
             PropertyValue::Astring(s) => format!("astring: {}", s),
             PropertyValue::Ustring(s) => format!("ustring: {}", s),
-            PropertyValue::FMRI(fmris) => format!("fmri: {}", fmris.join(" ")),
+            PropertyValue::Fmri(fmris) => format!("fmri: {}", fmris.join(" ")),
             PropertyValue::Other(s) => s.to_string(),
         }
     }
@@ -1507,10 +1536,8 @@ impl<'a> PropertyLookup<'a> {
     where
         S: AsRef<str>,
     {
-        let mut args = vec![];
-
         // Longer output, but more consistent parsing.
-        args.push("-t".to_string());
+        let mut args = vec!["-t".to_string()];
 
         // [-C | -c | -s snapshot]
         self.add_attachment_to_args(&mut args);
@@ -1562,12 +1589,11 @@ impl<'a> PropertyWait<'a> {
     where
         S: AsRef<str>,
     {
-        let mut args = vec![];
-
-        args.push("-w".to_string());
-
-        // Longer output, but more consistent parsing.
-        args.push("-t".to_string());
+        let mut args = vec![
+            "-w".to_string(),
+            // Longer output, but more consistent parsing.
+            "-t".to_string(),
+        ];
 
         // [-z zone]
         self.property_base.add_zone_to_args(&mut args);
@@ -1612,7 +1638,7 @@ mod tests {
             next_state: None,
             scope_name: "localhost".to_string(),
             service_name: "system/device/local".to_string(),
-            state: SMFState::Online,
+            state: SmfState::Online,
             service_time: "14:57:25".to_string(),
             zone: "global".to_string(),
             description: Some("Standard Solaris device config".to_string()),
@@ -1628,10 +1654,7 @@ mod tests {
         let pattern = [&fmri];
 
         let query = Query::new().get_status(QuerySelection::ByPattern(&pattern));
-        assert!(
-            query.is_ok(),
-            format!("Unexpected err: {}", query.err().unwrap())
-        );
+        assert!(query.is_ok(), "Unexpected err: {}", query.err().unwrap());
 
         let mut results = query.unwrap();
         let first = results.next().unwrap();
@@ -1648,10 +1671,7 @@ mod tests {
         let pattern = [svc_usr, svc_root];
 
         let query = Query::new().get_status(QuerySelection::ByPattern(&pattern));
-        assert!(
-            query.is_ok(),
-            format!("Unexpected err: {}", query.err().unwrap())
-        );
+        assert!(query.is_ok(), "Unexpected err: {}", query.err().unwrap());
 
         let mut results = query.unwrap();
         let root = results.next().unwrap();
@@ -1664,19 +1684,13 @@ mod tests {
     #[test]
     fn test_svcs_get_status_all() {
         let query = Query::new().get_status_all();
-        assert!(
-            query.is_ok(),
-            format!("Unexpected err: {}", query.err().unwrap())
-        );
+        assert!(query.is_ok(), "Unexpected err: {}", query.err().unwrap());
     }
 
     #[test]
     fn test_svcs_get_status_all_global_zone() {
         let query = Query::new().zone("global").get_status_all();
-        assert!(
-            query.is_ok(),
-            format!("Unexpected err: {}", query.err().unwrap())
-        );
+        assert!(query.is_ok(), "Unexpected err: {}", query.err().unwrap());
     }
 
     #[test]
