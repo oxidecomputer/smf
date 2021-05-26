@@ -1307,6 +1307,16 @@ impl Property {
     pub fn new(name: PropertyName, value: PropertyValue) -> Self {
         Property { name, value }
     }
+
+    /// Accesses the name of this property.
+    pub fn name(&self) -> &PropertyName {
+        &self.name
+    }
+
+    /// Accesses the value of this property.
+    pub fn value(&self) -> &PropertyValue {
+        &self.value
+    }
 }
 
 impl FromStr for Property {
