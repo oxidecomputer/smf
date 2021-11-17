@@ -9,6 +9,12 @@ use std::str::FromStr;
 use std::string::ToString;
 use thiserror::Error;
 
+const PFEXEC: &str = "/usr/bin/pfexec";
+const SVCS: &str = "/usr/bin/svcs";
+const SVCCFG: &str = "/usr/sbin/svccfg";
+const SVCADM: &str = "/usr/sbin/svcadm";
+const SVCPROP: &str = "/usr/bin/svcprop";
+
 /// The error type for parsing a bad status code while reading stdout.
 #[derive(Error, Debug)]
 #[error("{0}")]
@@ -303,8 +309,9 @@ impl Query {
 
     // Issues command, returns stdout.
     fn issue_command(&self, args: Vec<String>) -> Result<String, QueryError> {
-        Ok(std::process::Command::new("/usr/bin/svcs")
+        Ok(std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCS)
             .args(args)
             .output()
             .map_err(QueryError::Command)?
@@ -590,8 +597,9 @@ impl ConfigExport {
         }
         args.push(fmri.as_ref());
 
-        Ok(std::process::Command::new("/usr/sbin/svccfg")
+        Ok(std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCCFG)
             .args(args)
             .output()
             .map_err(ConfigError::Command)?
@@ -626,8 +634,9 @@ impl ConfigImport {
         let path_str = path.as_ref().to_string_lossy();
         args.push(&path_str);
 
-        std::process::Command::new("/usr/sbin/svccfg")
+        std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCCFG)
             .args(args)
             .output()
             .map_err(ConfigError::Command)?
@@ -664,8 +673,9 @@ impl ConfigDelete {
         }
         args.push(fmri.as_ref());
 
-        std::process::Command::new("/usr/sbin/svccfg")
+        std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCCFG)
             .args(args)
             .output()
             .map_err(ConfigError::Command)?
@@ -688,8 +698,9 @@ impl ConfigAdd {
     /// Runs the add entity command.
     pub fn run<S: AsRef<str>>(&mut self, child: S) -> Result<(), ConfigError> {
         let args = vec!["-s", &self.fmri, "add", child.as_ref()];
-        std::process::Command::new("/usr/sbin/svccfg")
+        std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCCFG)
             .args(args)
             .output()
             .map_err(ConfigError::Command)?
@@ -718,8 +729,9 @@ impl ConfigSetProperty {
         );
 
         let args = vec!["-s", &self.fmri, "setprop", &prop];
-        std::process::Command::new("/usr/sbin/svccfg")
+        std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCCFG)
             .args(args)
             .output()
             .map_err(ConfigError::Command)?
@@ -794,8 +806,9 @@ impl Adm {
     }
 
     fn run(args: Vec<String>) -> Result<(), AdmError> {
-        std::process::Command::new("/usr/sbin/svcadm")
+        std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCADM)
             .args(args)
             .output()
             .map_err(AdmError::Command)?
@@ -1566,8 +1579,9 @@ impl<'a> PropertyLookup<'a> {
         // Requests a single FMRI.
         args.push(fmri.as_ref().into());
 
-        let out = std::process::Command::new("/usr/bin/svcprop")
+        let out = std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCPROP)
             .args(args)
             .output()
             .map_err(PropertyError::Command)?
@@ -1619,8 +1633,9 @@ impl<'a> PropertyWait<'a> {
         // Requests a single FMRI.
         args.push(fmri.as_ref().into());
 
-        let out = std::process::Command::new("/usr/bin/svcprop")
+        let out = std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCPROP)
             .args(args)
             .output()
             .map_err(PropertyError::Command)?
