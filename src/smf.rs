@@ -770,7 +770,7 @@ impl ConfigAddPropertyValue {
         Self { fmri }
     }
 
-    /// Runs the set property command.
+    /// Runs the add property value command.
     pub fn run(&self, property: Property) -> Result<(), ConfigError> {
         let name = property.name.to_string();
         let value = property.value.to_string();
@@ -797,7 +797,7 @@ impl ConfigDeletePropertyValue {
         Self { fmri }
     }
 
-    /// Runs the set property command.
+    /// Runs the delete property value command.
     pub fn run(&self, property_name: &PropertyName, value: &str) -> Result<(), ConfigError> {
         let name = property_name.to_string();
         let args = vec!["-s", &self.fmri, "delpropvalue", &name, value];
