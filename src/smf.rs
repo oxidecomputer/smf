@@ -558,6 +558,21 @@ impl Config {
     pub fn set_property<S: AsRef<str>>(fmri: S) -> ConfigSetProperty {
         ConfigSetProperty::new(fmri.as_ref().into())
     }
+
+    /// Builds a [ConfigAddPropertyValue] object.
+    ///
+    /// ```no_run
+    /// let property = smf::Property::new(
+    ///     smf::PropertyName::new("group", "comment").unwrap(),
+    ///     smf::PropertyValue::Astring("hello".to_string())
+    /// );
+    /// smf::Config::add_property_value("my_service:default")
+    ///     .run(property)
+    ///     .unwrap();
+    /// ```
+    pub fn add_property_value<S: AsRef<str>>(fmri: S) -> ConfigAddPropertyValue {
+        ConfigAddPropertyValue::new(fmri.as_ref().into())
+    }
 }
 
 trait ConfigSubcommand {
@@ -718,6 +733,33 @@ impl ConfigSetProperty {
         );
 
         let args = vec!["-s", &self.fmri, "setprop", &prop];
+        std::process::Command::new("/usr/sbin/svccfg")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(ConfigError::Command)?
+            .read_stdout()
+            .map(|_| ())
+            .map_err(|err| err.into())
+    }
+}
+
+/// Created by [Config::add_property_value], adds a property value for a
+/// service.
+pub struct ConfigAddPropertyValue {
+    fmri: String,
+}
+
+impl ConfigAddPropertyValue {
+    fn new(fmri: String) -> Self {
+        Self { fmri }
+    }
+
+    /// Runs the set property command.
+    pub fn run(&self, property: Property) -> Result<(), ConfigError> {
+        let name = property.name.to_string();
+        let value = property.value.to_string();
+        let args = vec!["-s", &self.fmri, "addpropvalue", &name, &value];
         std::process::Command::new("/usr/sbin/svccfg")
             .env_clear()
             .args(args)
