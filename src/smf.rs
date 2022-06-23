@@ -573,6 +573,21 @@ impl Config {
     pub fn add_property_value<S: AsRef<str>>(fmri: S) -> ConfigAddPropertyValue {
         ConfigAddPropertyValue::new(fmri.as_ref().into())
     }
+
+    /// Builds a [ConfigDeletePropertyValue] object.
+    ///
+    /// Note that the property value passed to
+    /// [ConfigDeletePropertyValue::run()] is a glob pattern.
+    ///
+    /// ```no_run
+    /// let property_name = smf::PropertyName::new("group", "comment").unwrap();
+    /// smf::Config::delete_property_value("my_service:default")
+    ///     .run(&property_name, "hello*")
+    ///     .unwrap();
+    /// ```
+    pub fn delete_property_value<S: AsRef<str>>(fmri: S) -> ConfigDeletePropertyValue {
+        ConfigDeletePropertyValue::new(fmri.as_ref().into())
+    }
 }
 
 trait ConfigSubcommand {
@@ -760,6 +775,32 @@ impl ConfigAddPropertyValue {
         let name = property.name.to_string();
         let value = property.value.to_string();
         let args = vec!["-s", &self.fmri, "addpropvalue", &name, &value];
+        std::process::Command::new("/usr/sbin/svccfg")
+            .env_clear()
+            .args(args)
+            .output()
+            .map_err(ConfigError::Command)?
+            .read_stdout()
+            .map(|_| ())
+            .map_err(|err| err.into())
+    }
+}
+
+/// Created by [Config::delete_property_value], adds a property value for a
+/// service.
+pub struct ConfigDeletePropertyValue {
+    fmri: String,
+}
+
+impl ConfigDeletePropertyValue {
+    fn new(fmri: String) -> Self {
+        Self { fmri }
+    }
+
+    /// Runs the set property command.
+    pub fn run(&self, property_name: &PropertyName, value: &str) -> Result<(), ConfigError> {
+        let name = property_name.to_string();
+        let args = vec!["-s", &self.fmri, "delpropvalue", &name, value];
         std::process::Command::new("/usr/sbin/svccfg")
             .env_clear()
             .args(args)
