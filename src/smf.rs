@@ -5,6 +5,7 @@
 #![deny(missing_docs)]
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::str::FromStr;
 use std::string::ToString;
 use thiserror::Error;
@@ -13,6 +14,12 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 #[error("{0}")]
 pub struct CommandOutputError(String);
+
+const PFEXEC: &str = "/usr/bin/pfexec";
+const SVCPROP: &str = "/usr/bin/svcprop";
+const SVCS: &str = "/usr/bin/svcs";
+const SVCCFG: &str = "/usr/sbin/svccfg";
+const SVCADM: &str = "/usr/sbin/svcadm";
 
 trait OutputExt {
     fn read_stdout(&self) -> Result<String, CommandOutputError>;
@@ -302,21 +309,22 @@ impl Query {
     }
 
     // Issues command, returns stdout.
-    fn issue_command(&self, args: Vec<String>) -> Result<String, QueryError> {
-        Ok(std::process::Command::new("/usr/bin/svcs")
+    fn run(&self, args: Vec<String>) -> Result<String, QueryError> {
+        Ok(std::process::Command::new(PFEXEC)
             .env_clear()
+            .arg(SVCS)
             .args(args)
             .output()
             .map_err(QueryError::Command)?
             .read_stdout()?)
     }
 
-    fn issue_status_command(
+    fn run_and_parse_output(
         &self,
         args: Vec<String>,
     ) -> Result<impl Iterator<Item = SvcStatus>, QueryError> {
         Ok(self
-            .issue_command(args)?
+            .run(args)?
             .split('\n')
             .map(|s| s.parse::<SvcStatus>())
             .collect::<Result<Vec<SvcStatus>, _>>()?
@@ -380,7 +388,7 @@ impl Query {
             QuerySelection::ByPattern(names) => self.add_patterns(&mut args, names),
         }
 
-        self.issue_status_command(args)
+        self.run_and_parse_output(args)
     }
 
     // Shared implementation for getting dependencies and dependents.
@@ -399,7 +407,7 @@ impl Query {
         // XXX patterns need cleaning, same in other getters
         self.add_patterns(&mut args, patterns);
 
-        self.issue_status_command(args)
+        self.run_and_parse_output(args)
     }
 
     /// Returns the statuses of service instances upon which the provided
@@ -466,7 +474,7 @@ impl Query {
         self.add_zone_to_args(&mut args);
         self.add_patterns(&mut args, patterns);
         Ok(self
-            .issue_command(args)?
+            .run(args)?
             .split('\n')
             .map(|s| s.parse::<PathBuf>())
             .collect::<Result<Vec<PathBuf>, _>>()
@@ -612,17 +620,24 @@ impl ConfigExport {
         self
     }
 
-    /// Runs the export command, returning the manifest output as a string.
-    pub fn run<S: AsRef<str>>(&mut self, fmri: S) -> Result<String, ConfigError> {
+    /// Returns the export command without running it.
+    pub fn as_command<S: AsRef<str>>(&mut self, fmri: S) -> Command {
         let mut args = vec!["export"];
         if self.archive {
             args.push("-a");
         }
         args.push(fmri.as_ref());
 
-        Ok(std::process::Command::new("/usr/sbin/svccfg")
-            .env_clear()
-            .args(args)
+        let mut cmd = std::process::Command::new(PFEXEC);
+        cmd.env_clear()
+            .arg(SVCCFG)
+            .args(args);
+        cmd
+    }
+
+    /// Runs the export command, returning the manifest output as a string.
+    pub fn run<S: AsRef<str>>(&mut self, fmri: S) -> Result<String, ConfigError> {
+        Ok(self.as_command(fmri)
             .output()
             .map_err(ConfigError::Command)?
             .read_stdout()?)
@@ -647,8 +662,8 @@ impl ConfigImport {
         self
     }
 
-    /// Runs the import command.
-    pub fn run<P: AsRef<Path>>(&mut self, path: P) -> Result<(), ConfigError> {
+    /// Returns the import command, without running it.
+    pub fn as_command<P: AsRef<Path>>(&mut self, path: P) -> Command {
         let mut args = vec!["import"];
         if self.validate {
             args.push("-V");
@@ -656,9 +671,16 @@ impl ConfigImport {
         let path_str = path.as_ref().to_string_lossy();
         args.push(&path_str);
 
-        std::process::Command::new("/usr/sbin/svccfg")
-            .env_clear()
-            .args(args)
+        let mut cmd = std::process::Command::new(PFEXEC);
+        cmd.env_clear()
+            .arg(SVCCFG)
+            .args(args);
+        cmd
+    }
+
+    /// Runs the import command.
+    pub fn run<P: AsRef<Path>>(&mut self, path: P) -> Result<(), ConfigError> {
+        self.as_command(path)
             .output()
             .map_err(ConfigError::Command)?
             .read_stdout()
@@ -686,17 +708,24 @@ impl ConfigDelete {
         self
     }
 
-    /// Runs the deletion command.
-    pub fn run<S: AsRef<str>>(&mut self, fmri: S) -> Result<(), ConfigError> {
+    /// Returns the deletion command, without running it.
+    pub fn as_command<S: AsRef<str>>(&mut self, fmri: S) -> Command {
         let mut args = vec!["delete"];
         if self.force {
             args.push("-f");
         }
         args.push(fmri.as_ref());
 
-        std::process::Command::new("/usr/sbin/svccfg")
-            .env_clear()
-            .args(args)
+        let mut cmd = std::process::Command::new(PFEXEC);
+        cmd.env_clear()
+            .arg(SVCCFG)
+            .args(args);
+        cmd
+    }
+
+    /// Runs the deletion command.
+    pub fn run<S: AsRef<str>>(&mut self, fmri: S) -> Result<(), ConfigError> {
+        self.as_command(fmri)
             .output()
             .map_err(ConfigError::Command)?
             .read_stdout()
@@ -715,12 +744,19 @@ impl ConfigAdd {
         ConfigAdd { fmri }
     }
 
+    /// Returns the command, without running it
+    pub fn as_command<S: AsRef<str>>(&mut self, child: S) -> Command {
+        let args = vec!["-s", &self.fmri, "add", child.as_ref()];
+        let mut cmd = std::process::Command::new(PFEXEC);
+        cmd.env_clear()
+            .arg(SVCCFG)
+            .args(args);
+        cmd
+    }
+
     /// Runs the add entity command.
     pub fn run<S: AsRef<str>>(&mut self, child: S) -> Result<(), ConfigError> {
-        let args = vec!["-s", &self.fmri, "add", child.as_ref()];
-        std::process::Command::new("/usr/sbin/svccfg")
-            .env_clear()
-            .args(args)
+        self.as_command(child)
             .output()
             .map_err(ConfigError::Command)?
             .read_stdout()
@@ -739,8 +775,8 @@ impl ConfigSetProperty {
         ConfigSetProperty { fmri }
     }
 
-    /// Runs the set property command.
-    pub fn run(&self, property: Property) -> Result<(), ConfigError> {
+    /// Returns the command which would set a property
+    pub fn as_command(&self, property: Property) -> Command {
         let prop = format!(
             "{} = {}",
             property.name.to_string(),
@@ -748,9 +784,17 @@ impl ConfigSetProperty {
         );
 
         let args = vec!["-s", &self.fmri, "setprop", &prop];
-        std::process::Command::new("/usr/sbin/svccfg")
+        let mut cmd = std::process::Command::new(PFEXEC);
+        cmd
             .env_clear()
-            .args(args)
+            .arg(SVCCFG)
+            .args(args);
+        cmd
+    }
+
+    /// Runs the command to set a property
+    pub fn run(&self, property: Property) -> Result<(), ConfigError> {
+        self.as_command(property)
             .output()
             .map_err(ConfigError::Command)?
             .read_stdout()
@@ -770,14 +814,21 @@ impl ConfigAddPropertyValue {
         Self { fmri }
     }
 
-    /// Runs the add property value command.
-    pub fn run(&self, property: Property) -> Result<(), ConfigError> {
+    /// Returns the command to add a property
+    pub fn as_command(&self, property: Property) -> Command {
         let name = property.name.to_string();
         let value = property.value.to_string();
         let args = vec!["-s", &self.fmri, "addpropvalue", &name, &value];
-        std::process::Command::new("/usr/sbin/svccfg")
-            .env_clear()
-            .args(args)
+        let mut cmd = std::process::Command::new(PFEXEC);
+        cmd.env_clear()
+            .arg(SVCCFG)
+            .args(args);
+        cmd
+    }
+
+    /// Runs the add property value command.
+    pub fn run(&self, property: Property) -> Result<(), ConfigError> {
+        self.as_command(property)
             .output()
             .map_err(ConfigError::Command)?
             .read_stdout()
@@ -797,13 +848,21 @@ impl ConfigDeletePropertyValue {
         Self { fmri }
     }
 
-    /// Runs the delete property value command.
-    pub fn run(&self, property_name: &PropertyName, value: &str) -> Result<(), ConfigError> {
+    /// Returns the command without running it.
+    pub fn as_command(&self, property_name: &PropertyName, value: &str) -> Command {
         let name = property_name.to_string();
         let args = vec!["-s", &self.fmri, "delpropvalue", &name, value];
-        std::process::Command::new("/usr/sbin/svccfg")
+        let mut cmd = std::process::Command::new(PFEXEC);
+        cmd
             .env_clear()
-            .args(args)
+            .arg(SVCCFG)
+            .args(args);
+        cmd
+    }
+
+    /// Runs the delete property value command.
+    pub fn run(&self, property_name: &PropertyName, value: &str) -> Result<(), ConfigError> {
+        self.as_command(property_name, value)
             .output()
             .map_err(ConfigError::Command)?
             .read_stdout()
@@ -874,16 +933,6 @@ impl Adm {
     pub fn zone<S: AsRef<str>>(&mut self, zone: S) -> &mut Adm {
         self.zone.replace(zone.as_ref().into());
         self
-    }
-
-    fn run(args: Vec<String>) -> Result<(), AdmError> {
-        std::process::Command::new("/usr/sbin/svcadm")
-            .env_clear()
-            .args(args)
-            .output()
-            .map_err(AdmError::Command)?
-            .read_stdout()?;
-        Ok(())
     }
 
     /// Builds a [AdmEnable] object.
@@ -975,10 +1024,10 @@ trait AdmSubcommand {
 }
 
 /// Shared mechanism of running all subcommands created by [Adm].
-fn run_adm_subcommand<C, S, I>(
+fn as_adm_subcommand<C, S, I>(
     subcommand: &C,
     selection: AdmSelection<S, I>,
-) -> Result<(), AdmError>
+) -> Command
 where
     C: AdmSubcommand,
     S: AsRef<str>,
@@ -1001,7 +1050,29 @@ where
             args.extend(pattern.into_iter().map(|s| s.as_ref().to_string()));
         }
     }
-    Adm::run(args)
+    let mut cmd = std::process::Command::new(PFEXEC);
+    cmd.env_clear()
+        .arg(SVCADM)
+        .args(args);
+    cmd
+}
+
+
+/// Shared mechanism of running all subcommands created by [Adm].
+fn run_adm_subcommand<C, S, I>(
+    subcommand: &C,
+    selection: AdmSelection<S, I>,
+) -> Result<(), AdmError>
+where
+    C: AdmSubcommand,
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+{
+    as_adm_subcommand(subcommand, selection)
+        .output()
+        .map_err(AdmError::Command)?
+        .read_stdout()?;
+    Ok(())
 }
 
 /// Created by [Adm::enable], enables the service instance(s).
@@ -1061,6 +1132,15 @@ impl<'a> AdmEnable<'a> {
     pub fn temporary(&mut self) -> &mut Self {
         self.temporary = true;
         self
+    }
+
+    /// Returns the command, without running it
+    pub fn as_command<S, I>(&mut self, selection: AdmSelection<S, I>) -> Command
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        as_adm_subcommand(self, selection)
     }
 
     /// Runs the command.
@@ -1132,6 +1212,15 @@ impl<'a> AdmDisable<'a> {
         self
     }
 
+    /// Returns the command, without running it
+    pub fn as_command<S, I>(&mut self, selection: AdmSelection<S, I>) -> Command
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        as_adm_subcommand(self, selection)
+    }
+
     /// Runs the command.
     pub fn run<S, I>(&mut self, selection: AdmSelection<S, I>) -> Result<(), AdmError>
     where
@@ -1173,6 +1262,15 @@ impl<'a> AdmRestart<'a> {
         self
     }
 
+    /// Returns the command, without running it
+    pub fn as_command<S, I>(&mut self, selection: AdmSelection<S, I>) -> Command
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        as_adm_subcommand(self, selection)
+    }
+
     /// Runs the command.
     pub fn run<S, I>(&mut self, selection: AdmSelection<S, I>) -> Result<(), AdmError>
     where
@@ -1204,6 +1302,15 @@ impl<'a> AdmSubcommand for AdmRefresh<'a> {
 impl<'a> AdmRefresh<'a> {
     fn new(adm: &'a Adm) -> Self {
         Self { adm }
+    }
+
+    /// Returns the command, without running it
+    pub fn as_command<S, I>(&mut self, selection: AdmSelection<S, I>) -> Command
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        as_adm_subcommand(self, selection)
     }
 
     /// Runs the command.
@@ -1238,6 +1345,15 @@ impl<'a> AdmSubcommand for AdmClear<'a> {
 impl<'a> AdmClear<'a> {
     fn new(adm: &'a Adm) -> Self {
         Self { adm }
+    }
+
+    /// Returns the command, without running it
+    pub fn as_command<S, I>(&mut self, selection: AdmSelection<S, I>) -> Command
+    where
+        S: AsRef<str>,
+        I: IntoIterator<Item = S>,
+    {
+        as_adm_subcommand(self, selection)
     }
 
     /// Runs the command.
@@ -1624,8 +1740,8 @@ impl<'a> PropertyLookup<'a> {
         }
     }
 
-    /// Looks up a property for a specified FMRI.
-    pub fn run<S>(&mut self, property: &PropertyName, fmri: S) -> Result<Property, PropertyError>
+    /// Returns the command to lookup a property
+    pub fn as_command<S>(&mut self, property: &PropertyName, fmri: S) -> Command
     where
         S: AsRef<str>,
     {
@@ -1649,14 +1765,29 @@ impl<'a> PropertyLookup<'a> {
         // Requests a single FMRI.
         args.push(fmri.as_ref().into());
 
-        let out = std::process::Command::new("/usr/bin/svcprop")
+        let mut cmd = std::process::Command::new(PFEXEC);
+        cmd
             .env_clear()
-            .args(args)
-            .output()
-            .map_err(PropertyError::Command)?
-            .read_stdout()?;
+            .arg(SVCPROP)
+            .args(args);
+        cmd
+    }
 
+    /// Parses the output for an executed command from [Self::as_command].
+    pub fn parse_output(output: &Output) -> Result<Property, PropertyError> {
+        let out = output.read_stdout()?;
         out.parse().map_err(|err: PropertyParseError| err.into())
+    }
+
+    /// Looks up a property for a specified FMRI.
+    pub fn run<S>(&mut self, property: &PropertyName, fmri: S) -> Result<Property, PropertyError>
+    where
+        S: AsRef<str>,
+    {
+        let out = self.as_command(property, fmri)
+            .output()
+            .map_err(PropertyError::Command)?;
+        Self::parse_output(&out)
     }
 }
 
@@ -1670,15 +1801,12 @@ impl<'a> PropertyWait<'a> {
         PropertyWait { property_base }
     }
 
-    /// Waits until a specified property group changes before printing.
-    ///
-    /// Returns requested property - note that it might not be the
-    /// property which changed.
-    pub fn run<S>(
+    /// Returns the Command to wait for a property, without running it.
+    pub fn as_command<S>(
         &mut self,
         property: &PropertyGroupName,
         fmri: S,
-    ) -> Result<Property, PropertyError>
+    ) -> Command
     where
         S: AsRef<str>,
     {
@@ -1702,14 +1830,35 @@ impl<'a> PropertyWait<'a> {
         // Requests a single FMRI.
         args.push(fmri.as_ref().into());
 
-        let out = std::process::Command::new("/usr/bin/svcprop")
-            .env_clear()
-            .args(args)
-            .output()
-            .map_err(PropertyError::Command)?
-            .read_stdout()?;
+        let mut cmd = std::process::Command::new(PFEXEC);
+        cmd.env_clear()
+            .arg(SVCPROP)
+            .args(args);
+        cmd
+    }
 
+    /// Parses the output for an executed command from [Self::as_command].
+    pub fn parse_output(output: &Output) -> Result<Property, PropertyError> {
+        let out = output.read_stdout()?;
         out.parse().map_err(|err: PropertyParseError| err.into())
+    }
+
+    /// Waits until a specified property group changes before printing.
+    ///
+    /// Returns requested property - note that it might not be the
+    /// property which changed.
+    pub fn run<S>(
+        &mut self,
+        property: &PropertyGroupName,
+        fmri: S,
+    ) -> Result<Property, PropertyError>
+    where
+        S: AsRef<str>,
+    {
+        let output = self.as_command(property, fmri)
+            .output()
+            .map_err(PropertyError::Command)?;
+        Self::parse_output(&output)
     }
 }
 
