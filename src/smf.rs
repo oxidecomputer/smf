@@ -629,15 +629,14 @@ impl ConfigExport {
         args.push(fmri.as_ref());
 
         let mut cmd = std::process::Command::new(PFEXEC);
-        cmd.env_clear()
-            .arg(SVCCFG)
-            .args(args);
+        cmd.env_clear().arg(SVCCFG).args(args);
         cmd
     }
 
     /// Runs the export command, returning the manifest output as a string.
     pub fn run<S: AsRef<str>>(&mut self, fmri: S) -> Result<String, ConfigError> {
-        Ok(self.as_command(fmri)
+        Ok(self
+            .as_command(fmri)
             .output()
             .map_err(ConfigError::Command)?
             .read_stdout()?)
@@ -672,9 +671,7 @@ impl ConfigImport {
         args.push(&path_str);
 
         let mut cmd = std::process::Command::new(PFEXEC);
-        cmd.env_clear()
-            .arg(SVCCFG)
-            .args(args);
+        cmd.env_clear().arg(SVCCFG).args(args);
         cmd
     }
 
@@ -717,9 +714,7 @@ impl ConfigDelete {
         args.push(fmri.as_ref());
 
         let mut cmd = std::process::Command::new(PFEXEC);
-        cmd.env_clear()
-            .arg(SVCCFG)
-            .args(args);
+        cmd.env_clear().arg(SVCCFG).args(args);
         cmd
     }
 
@@ -748,9 +743,7 @@ impl ConfigAdd {
     pub fn as_command<S: AsRef<str>>(&mut self, child: S) -> Command {
         let args = vec!["-s", &self.fmri, "add", child.as_ref()];
         let mut cmd = std::process::Command::new(PFEXEC);
-        cmd.env_clear()
-            .arg(SVCCFG)
-            .args(args);
+        cmd.env_clear().arg(SVCCFG).args(args);
         cmd
     }
 
@@ -785,10 +778,7 @@ impl ConfigSetProperty {
 
         let args = vec!["-s", &self.fmri, "setprop", &prop];
         let mut cmd = std::process::Command::new(PFEXEC);
-        cmd
-            .env_clear()
-            .arg(SVCCFG)
-            .args(args);
+        cmd.env_clear().arg(SVCCFG).args(args);
         cmd
     }
 
@@ -820,9 +810,7 @@ impl ConfigAddPropertyValue {
         let value = property.value.to_string();
         let args = vec!["-s", &self.fmri, "addpropvalue", &name, &value];
         let mut cmd = std::process::Command::new(PFEXEC);
-        cmd.env_clear()
-            .arg(SVCCFG)
-            .args(args);
+        cmd.env_clear().arg(SVCCFG).args(args);
         cmd
     }
 
@@ -853,10 +841,7 @@ impl ConfigDeletePropertyValue {
         let name = property_name.to_string();
         let args = vec!["-s", &self.fmri, "delpropvalue", &name, value];
         let mut cmd = std::process::Command::new(PFEXEC);
-        cmd
-            .env_clear()
-            .arg(SVCCFG)
-            .args(args);
+        cmd.env_clear().arg(SVCCFG).args(args);
         cmd
     }
 
@@ -1024,10 +1009,7 @@ trait AdmSubcommand {
 }
 
 /// Shared mechanism of running all subcommands created by [Adm].
-fn as_adm_subcommand<C, S, I>(
-    subcommand: &C,
-    selection: AdmSelection<S, I>,
-) -> Command
+fn as_adm_subcommand<C, S, I>(subcommand: &C, selection: AdmSelection<S, I>) -> Command
 where
     C: AdmSubcommand,
     S: AsRef<str>,
@@ -1051,12 +1033,9 @@ where
         }
     }
     let mut cmd = std::process::Command::new(PFEXEC);
-    cmd.env_clear()
-        .arg(SVCADM)
-        .args(args);
+    cmd.env_clear().arg(SVCADM).args(args);
     cmd
 }
-
 
 /// Shared mechanism of running all subcommands created by [Adm].
 fn run_adm_subcommand<C, S, I>(
@@ -1766,10 +1745,7 @@ impl<'a> PropertyLookup<'a> {
         args.push(fmri.as_ref().into());
 
         let mut cmd = std::process::Command::new(PFEXEC);
-        cmd
-            .env_clear()
-            .arg(SVCPROP)
-            .args(args);
+        cmd.env_clear().arg(SVCPROP).args(args);
         cmd
     }
 
@@ -1784,7 +1760,8 @@ impl<'a> PropertyLookup<'a> {
     where
         S: AsRef<str>,
     {
-        let out = self.as_command(property, fmri)
+        let out = self
+            .as_command(property, fmri)
             .output()
             .map_err(PropertyError::Command)?;
         Self::parse_output(&out)
@@ -1802,11 +1779,7 @@ impl<'a> PropertyWait<'a> {
     }
 
     /// Returns the Command to wait for a property, without running it.
-    pub fn as_command<S>(
-        &mut self,
-        property: &PropertyGroupName,
-        fmri: S,
-    ) -> Command
+    pub fn as_command<S>(&mut self, property: &PropertyGroupName, fmri: S) -> Command
     where
         S: AsRef<str>,
     {
@@ -1831,9 +1804,7 @@ impl<'a> PropertyWait<'a> {
         args.push(fmri.as_ref().into());
 
         let mut cmd = std::process::Command::new(PFEXEC);
-        cmd.env_clear()
-            .arg(SVCPROP)
-            .args(args);
+        cmd.env_clear().arg(SVCPROP).args(args);
         cmd
     }
 
@@ -1855,7 +1826,8 @@ impl<'a> PropertyWait<'a> {
     where
         S: AsRef<str>,
     {
-        let output = self.as_command(property, fmri)
+        let output = self
+            .as_command(property, fmri)
             .output()
             .map_err(PropertyError::Command)?;
         Self::parse_output(&output)
