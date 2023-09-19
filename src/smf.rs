@@ -48,7 +48,7 @@ impl OutputExt for std::process::Output {
 /// Describes the state of a service.
 ///
 /// For more information, refer to the "States" section of the smf man page.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SmfState {
     /// The instance is disabled, must be explicitly enabled
     /// to later turn on.
@@ -126,7 +126,7 @@ pub enum QueryError {
 /// Describes the status of an SMF service.
 ///
 /// Refer to [Query] for information acquiring these structures.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SvcStatus {
     /// The FMRI of a service (fault management resource identifier).
     /// Functionally acts as a service ID.
@@ -1365,7 +1365,7 @@ fn valid_property_substring(s: &str) -> bool {
 /// Property names typically have the form:
 ///   group/property
 /// This object represents the "group" portion of that object.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PropertyGroupName {
     group: String,
 }
@@ -1408,7 +1408,7 @@ impl ToString for PropertyGroupName {
 /// Property names typically have the form:
 ///   group/property
 /// This object represents that entire object.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PropertyName {
     group: PropertyGroupName,
     property: String,
@@ -1474,7 +1474,7 @@ impl ToString for PropertyName {
 }
 
 /// Describes a Property, with both its name and value.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Property {
     name: PropertyName,
     value: PropertyValue,
@@ -1515,7 +1515,7 @@ impl FromStr for Property {
 }
 
 /// Defines the values properties may have.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PropertyValue {
     /// A boolean value.
     Boolean(bool),

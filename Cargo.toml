@@ -1,6 +1,6 @@
 [package]
 name = "smf"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Sean Klein <sean@oxide.computer>"]
 edition = "2018"
 repository = "https://github.com/oxidecomputer/smf"
