@@ -476,6 +476,7 @@ impl Query {
         Ok(self
             .run(args)?
             .split('\n')
+            .filter(|l| !l.is_empty())
             .map(|s| s.parse::<PathBuf>())
             .collect::<Result<Vec<PathBuf>, _>>()
             .unwrap()
